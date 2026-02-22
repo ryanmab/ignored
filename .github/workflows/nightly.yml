@@ -1,0 +1,79 @@
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "7 7 * * *"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+name: Nightly
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    name: Test (nightly)
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: cargo test --locked
+        run: cargo test --locked --all-features --all-targets
+
+      - name: cargo test --doc
+        run: cargo test --locked --all-features --doc
+
+      - uses: ryanmab/incident-io-alert@v0.1.3
+        if: failure() && github.event_name == 'schedule'
+        with:
+          alert_source_id: ${{ secrets.ALERT_SOURCE_ID }}
+          alert_source_token: ${{ secrets.ALERT_SOURCE_TOKEN }}
+          title: "is-ignored repository: Nightly build failure"
+          status: firing
+          description: |
+            The nightly build for the is-ignored repository has failed.
+
+            This would indicate that there is an upcoming set of breaking changes to Rust, or
+            other dependencies, which will require an update to the is-ignored library.
+
+  update:
+    runs-on: ubuntu-latest
+    name: Test (beta / updated)
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install nightly
+        uses: dtolnay/rust-toolchain@beta
+
+      - name: cargo update
+        run: cargo update
+
+      - name: cargo test
+        run: cargo test --locked --all-features --all-targets
+        env:
+          RUSTFLAGS: -D deprecated
+
+      - name: cargo test --doc
+        run: cargo test --locked --all-features --doc
+        env:
+          RUSTFLAGS: -D deprecated
+
+      - uses: ryanmab/incident-io-alert@v0.1.3
+        if: failure() && github.event_name == 'schedule'
+        with:
+          alert_source_id: ${{ secrets.ALERT_SOURCE_ID }}
+          alert_source_token: ${{ secrets.ALERT_SOURCE_TOKEN }}
+          title: "is-ignored repository: Nightly build failure"
+          status: firing
+          description: |
+            The nightly build for the is-ignored repository has failed.
+
+            This would indicate that there is an upcoming set of breaking changes to Rust, or
+            other dependencies, which will require an update to the is-ignored library.

@@ -1,0 +1,6 @@
+[default]
+extend-ignore-identifiers-re = [
+    # Some tests use `foo` with `!` (a negation in glob patterns) inside
+    # the word to test escaping
+    "fo",
+]

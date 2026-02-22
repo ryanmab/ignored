@@ -1,0 +1,32 @@
+[package]
+name = "ignored"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.87.0"
+authors = ["Ryan Maber <ryan@ryanmaber.com>"]
+license = "MIT"
+description = "A Rust implementation of the .gitignore file format for quickly checking whether a path is ignored by git - without invoking the git cli."
+keywords = ["gitignore", "git", "ignored", "ignore"]
+categories = ["filesystem", "parser-implementations"]
+readme = "README.md"
+
+homepage = "https://ryanmaber.com"
+repository = "https://github.com/ryanmab/ignored"
+
+[badges]
+maintenance = { status = "passively-maintained" }
+
+[dependencies]
+log = "0.4.29"
+regex = "1.12.3"
+sha2 = "0.10.9"
+thiserror = "2.0.18"
+
+[dev-dependencies]
+fastrand = "2.3.0"
+proptest = { version = "1.10.0", features = ["proptest-macro"] }
+rstest = "0.26.1"
+tempfile = "3.25.0"
+
+[profile.release]
+lto = true
