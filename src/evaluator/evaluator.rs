@@ -116,7 +116,7 @@ impl Evaluator {
                 // lower level files down to the directory containing the file.
                 //
                 // We _have to_ check patterns in the higher levels _first_ because
-                // they might ignore whole directories which will prevent evaluations #[inline]
+                // they might ignore whole directories which will prevent evaluations
                 // in the lower levels from having any effect.
                 ignored = result;
             }
