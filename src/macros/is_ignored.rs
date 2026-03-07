@@ -144,6 +144,7 @@ mod tests {
     #[case(vec!["build"])]
     #[case(vec!["unicode","fileé.txt"])]
     #[case(vec!["ignored_outside_git_root.txt"])]
+    #[case(vec!["ignored_by_repo_level_exclude.txt"])]
     fn test_matches_git_check_ignore(#[case] path: Vec<&str>) {
         let temp = tempfile::tempdir().expect("Should be able to create a temporary directory");
 
@@ -202,6 +203,7 @@ mod tests {
 
         utils::copy_recursively("tests/fixtures/", temp.path())
             .expect("Should be able to copy the mock project");
+
         let repo_path = temp.path().join("mock-project");
 
         // Initialise a parent git root (above `mock-project`). This means the `.gitignore`
@@ -213,9 +215,6 @@ mod tests {
             .arg(temp.path())
             .output()
             .expect("Should be able to initialize parent git repository");
-
-        utils::copy_recursively("tests/fixtures/mock-project", repo_path.as_path())
-            .expect("Should be able to copy the mock project");
 
         Command::new("git")
             .arg("init")
@@ -231,6 +230,79 @@ mod tests {
         assert!(!crate::utils::git_check_ignore(
             repo_path.as_path(),
             repo_path.join("ignored_outside_git_root.txt").as_path()
+        ));
+    }
+
+    #[test]
+    fn test_observes_ignores_in_git_root() {
+        let temp = tempfile::tempdir().expect("Should be able to create a temporary directory");
+
+        utils::copy_recursively("tests/fixtures/", temp.path())
+            .expect("Should be able to copy the mock project");
+        let repo_path = temp.path().join("mock-project");
+
+        let file = repo_path.join("ignored_by_repo_level_exclude.txt");
+
+        Command::new("git")
+            .arg("init")
+            .arg(repo_path.as_path())
+            .output()
+            .expect("Should be able to initialize a git repository");
+
+        // Write into the root level ignore patterns
+        std::fs::write(
+            repo_path
+                .as_path()
+                .join(PathBuf::from_iter(vec![".git", "info", "exclude"])),
+            b"ignored_by_repo_level_exclude.txt",
+        )
+        .expect("Should be able to write the repo-level exclude file");
+
+        // Should be ignored as its listed in `.git/info/exclude`, and that should also match git's
+        // behavior
+        assert!(is_ignored!(file.as_path()));
+        assert!(crate::utils::git_check_ignore(repo_path, file.as_path()));
+    }
+
+    #[test_log::test(test)]
+    fn test_observes_recursive_git_roots_when_evaluating_excludes_listed_in_root() {
+        let temp = tempfile::tempdir().expect("Should be able to create a temporary directory");
+
+        utils::copy_recursively("tests/fixtures/", temp.path())
+            .expect("Should be able to copy the mock project");
+
+        let repo_path = temp.path().join("mock-project");
+        let file = repo_path.join("ignored_by_repo_level_exclude.txt");
+
+        // Initialise a parent git root (above `mock-project`).
+        Command::new("git")
+            .arg("init")
+            .arg(temp.path())
+            .output()
+            .expect("Should be able to initialize parent git repository");
+
+        // Write into the parent root level ignore patterns
+        std::fs::write(
+            temp.path()
+                .join(PathBuf::from_iter(vec![".git", "info", "exclude"])),
+            b"ignored_by_repo_level_exclude.txt",
+        )
+        .expect("Should be able to write the repo-level exclude file");
+
+        Command::new("git")
+            .arg("init")
+            .arg(repo_path.as_path())
+            .output()
+            .expect("Should be able to initialize child git repository");
+
+        // Shouldn't be ignored as even though there is a `.git/info/exclude` at the parent which ignores
+        // this file, there's still a child git root which resets the decision
+        assert!(!is_ignored!(file.as_path()));
+
+        // Check this behavior also matches the git cli
+        assert!(!crate::utils::git_check_ignore(
+            repo_path.as_path(),
+            file.as_path()
         ));
     }
 }

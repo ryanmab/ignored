@@ -11,10 +11,12 @@ use crate::{
 /// Read a `.gitignore` file at the given path and parse it into a [`crate::evaluator::File`] struct, which contains
 /// the base path (the directory containing the `.gitignore` file), the content (a vector of `Glob` patterns),
 /// and the checksum of the file content (used for caching purposes).
-pub fn read_gitignore(
-    base_path: impl AsRef<Path>,
-    gitignore_path: impl AsRef<Path>,
-) -> Result<File> {
+pub fn read_gitignore(gitignore_path: impl AsRef<Path>) -> Result<File> {
+    let base_path = gitignore_path
+        .as_ref()
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+
     let (checksum, file) = utils::compute_checksum(gitignore_path.as_ref()).map_err(|e| {
         evaluator::Error::FileError {
             file: gitignore_path.as_ref().to_path_buf(),
