@@ -220,6 +220,14 @@ impl Evaluator {
         (closest_git_root, is_ignored)
     }
 
+    /// Evaluate the repositories `.git/info/exclude` located at the root of the working tree.
+    ///
+    /// This is the second of three methods of ignoring files in git.
+    ///
+    /// This follows the precedence rules defined in the [git documentation](https://git-scm.com/docs/gitignore#_description).
+    ///
+    /// This method returns true or false, which denotes whether the file is ignored or not, only if the path was
+    /// matched in `.git/info/exclude`. If not, [`Option::None`] will be returned, denoting that the path was not listed.
     fn evaluate_git_exclude_file(
         &self,
         git_root: impl AsRef<Path>,
