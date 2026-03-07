@@ -6,7 +6,6 @@ use std::{
 };
 
 use crate::evaluator::{self, File, types::Result, utils};
-
 /// An evaluator for `.gitignore` files in a given directory and its parent directories.
 ///
 /// The evaluator maintains an internal cache of parsed `.gitignore` files to optimize performance when evaluating
@@ -62,21 +61,60 @@ impl Evaluator {
     /// ```
     #[must_use]
     pub fn is_ignored(&self, path: impl AsRef<Path>) -> bool {
-        let closest_already_encountered_git_root =
-            self.get_closest_already_encountered_git_root(&path);
+        // Patterns read from a `.gitignore` file in the same directory as
+        // the path, or in any parent directory (up to the top-level of
+        // the working tree)
+        let git_root = match self.evaluate_gitignore_files(path.as_ref()) {
+            (_, Some(is_ignored)) => {
+                log::debug!(
+                    "{} is ignored by .gitignore: {is_ignored}",
+                    path.as_ref().display()
+                );
+
+                return is_ignored;
+            }
+            (git_root, None) => git_root,
+        };
+
+        // Patterns read from $GIT_DIR/info/exclude.
+        if let Some(git_root) = git_root {
+            if let Some(is_ignored) = self.evaluate_git_exclude_file(git_root, path) {
+                return is_ignored;
+            }
+        }
+
+        false
+    }
+
+    /// Evaluate the repositories `.gitignore` files to determine if a given file or path is
+    /// ignored.
+    ///
+    /// This is the first of three methods of ignoring files in git.
+    ///
+    /// This follows the precedence rules defined in the [git documentation](https://git-scm.com/docs/gitignore#_description).
+    ///
+    /// During traversal it also records the closest relative git root (directory containing a
+    /// `.git`), which is beneficial for the second evaluation method - which is an ignore file
+    /// listed in the git root (`.git/info/exclude`).
+    ///
+    /// This method returns true or false, which denotes whether the file is ignored or not, only if the path was
+    /// matched in at least one `.gitignore` file. If not, [`Option::None`] will be returned,
+    /// denoting that no `.gitignore` file matched the path in either direction.
+    fn evaluate_gitignore_files(&self, path: impl AsRef<Path>) -> (Option<PathBuf>, Option<bool>) {
+        let mut closest_git_root = self.get_closest_already_encountered_git_root(&path);
 
         let path_parts = path.as_ref().iter().collect::<Vec<&OsStr>>();
-        let closest_already_encountered_git_root_offset = closest_already_encountered_git_root
+        let closest_git_root_offset = closest_git_root
             .as_ref()
             .map_or(1, |root| root.components().count());
 
-        let mut is_in_git_root = closest_already_encountered_git_root.is_some();
-        let mut is_ignored = false;
+        let mut is_in_git_root = closest_git_root.is_some();
+        let mut is_ignored = None;
 
-        for i in closest_already_encountered_git_root_offset..path_parts.len() {
+        for i in closest_git_root_offset..path_parts.len() {
             let base_path: PathBuf = path_parts[0..i].iter().collect();
 
-            if closest_already_encountered_git_root
+            if closest_git_root
                 .as_ref()
                 .is_some_and(|git_root| git_root == &base_path)
             {
@@ -91,7 +129,7 @@ impl Evaluator {
                 if is_in_git_root {
                     // We've reached _another_ git root, even though we're already in a git root (i.e.
                     // a repo inside a repo). We should reset our current ignored decision.
-                    is_ignored = false;
+                    is_ignored = None;
 
                     log::debug!(
                         "Encountered recursive git root at: {}",
@@ -115,6 +153,10 @@ impl Evaluator {
                         );
                     }
                 }
+
+                // Update the closest git root as we've now encountered one we previously didn't
+                // know about.
+                closest_git_root = Some(base_path.clone());
             } else {
                 // We've still not reached a git root (i.e. a `.git` folder). Conforming to git's
                 // semantics this means any `.gitignore` files don't apply.
@@ -123,13 +165,7 @@ impl Evaluator {
 
             let potential_gitignore = base_path.join(".gitignore");
 
-            if !potential_gitignore.exists() {
-                continue;
-            }
-
-            let gitignore_file = match self
-                .get_or_parse_gitignore(base_path.as_path(), potential_gitignore.as_path())
-            {
+            let gitignore_file = match self.get_or_parse_gitignore(potential_gitignore.as_path()) {
                 Ok(Some(gitignore_file)) => gitignore_file,
                 Ok(None) => continue,
                 Err(e) => {
@@ -161,15 +197,13 @@ impl Evaluator {
                 // vendor/
                 // !vendor/keep.me
                 // ```
-                is_ignored = true;
-
                 log::debug!(
                     "{} is ignored so {} is ignored by association.",
                     parent_path.as_path().display(),
                     path.as_ref().display()
                 );
 
-                break;
+                return (closest_git_root, Some(true));
             }
 
             if let Some(result) = gitignore_file.is_ignored(path.as_ref()) {
@@ -179,13 +213,54 @@ impl Evaluator {
                 // We _have to_ check patterns in the higher levels _first_ because
                 // they might ignore whole directories which will prevent evaluations
                 // in the lower levels from having any effect.
-                is_ignored = result;
+                is_ignored = Some(result);
             }
         }
 
-        log::debug!("{} is ignored: {is_ignored}", path.as_ref().display());
+        (closest_git_root, is_ignored)
+    }
 
-        is_ignored
+    /// Evaluate the repositories `.git/info/exclude` located at the root of the working tree.
+    ///
+    /// This is the second of three methods of ignoring files in git.
+    ///
+    /// This follows the precedence rules defined in the [git documentation](https://git-scm.com/docs/gitignore#_description).
+    ///
+    /// This method returns true or false, which denotes whether the file is ignored or not, only if the path was
+    /// matched in `.git/info/exclude`. If not, [`Option::None`] will be returned, denoting that the path was not listed.
+    fn evaluate_git_exclude_file(
+        &self,
+        git_root: impl AsRef<Path>,
+        path: impl AsRef<Path>,
+    ) -> Option<bool> {
+        let exclude_file = git_root.as_ref().join(".git").join("info").join("exclude");
+
+        let gitignore_file = match self.get_or_parse_gitignore(&exclude_file) {
+            Ok(file) => file,
+            Err(e) => {
+                log::error!(
+                    "Failed to read .gitignore file at {}: {:?}",
+                    exclude_file.display(),
+                    e
+                );
+
+                None
+            }
+        };
+
+        if let Some(gitignore_file) = gitignore_file {
+            if let Some(is_ignored) = gitignore_file.is_ignored(&path) {
+                log::debug!(
+                    "{} is ignored by {}: {is_ignored}",
+                    exclude_file.as_path().display(),
+                    path.as_ref().display()
+                );
+
+                return Some(is_ignored);
+            }
+        }
+
+        None
     }
 
     /// Get the closest already encountered git root which was found in a previous traversal of the
@@ -221,7 +296,6 @@ impl Evaluator {
     /// and hasn't changed since.
     fn get_or_parse_gitignore(
         &self,
-        base_path: impl AsRef<Path>,
         potential_gitignore: impl AsRef<Path>,
     ) -> Result<Option<Arc<File>>> {
         if !potential_gitignore.as_ref().exists() {
@@ -253,15 +327,11 @@ impl Evaluator {
                 // We've parsed this file before but the content has changed. We need to re-parse
                 // it from scratch
                 Arc::clone(&e.insert(Arc::new(utils::read_gitignore(
-                    base_path,
                     potential_gitignore.as_ref(),
                 )?)))
             }
             Entry::Vacant(e) => {
-                let gitignore_file = Arc::new(utils::read_gitignore(
-                    base_path,
-                    potential_gitignore.as_ref(),
-                )?);
+                let gitignore_file = Arc::new(utils::read_gitignore(potential_gitignore.as_ref())?);
 
                 // We've never encountered this file before, we need to parse it
                 Arc::clone(e.insert(gitignore_file))
