@@ -9,8 +9,8 @@
 
 # Ignored
 
-> **Note:** This crate _does not currently_ evaluate patterns defined in `$GIT_DIR/info/exclude` or the global
-> excludes file configured via `core.excludesFile`. Support for these may be added in the future.
+> **Note:** This crate _does not currently_ evaluate patterns defined in the global excludes file configured
+> via `core.excludesFile`. Support for this may be added in the future.
 
 A Rust implementation of the `.gitignore` file format for quickly checking whether a path is ignored by git - without invoking the git cli.
 
