@@ -28,14 +28,14 @@ pub fn compute_checksum(path: impl AsRef<Path>) -> io::Result<(Vec<u8>, File)> {
 ///
 /// [`https://git-scm.com/docs/git-check-ignore`]
 #[cfg(test)]
-pub fn git_check_ignore(repo_path: &Path, file: &Path) -> bool {
+pub fn git_check_ignore(repo_path: impl AsRef<Path>, file: impl AsRef<Path>) -> bool {
     use std::process::Command;
 
     let output = Command::new("git")
         .arg("-C")
-        .arg(repo_path)
+        .arg(repo_path.as_ref())
         .arg("check-ignore")
-        .arg(file)
+        .arg(file.as_ref())
         .output()
         .expect("failed to run git");
 

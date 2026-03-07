@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, hash_map::Entry},
     ffi::OsStr,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
 };
 
 use crate::evaluator::{self, File, types::Result, utils};
@@ -18,9 +18,9 @@ use crate::evaluator::{self, File, types::Result, utils};
 /// # Examples
 ///
 /// ```rust
-/// use std::path::Path;
 /// use ignored::evaluator::Evaluator;
 ///
+/// # std::fs::create_dir("tests/fixtures/mock-project/.git");
 /// let evaluator = Evaluator::default();
 /// let ignored = evaluator.is_ignored("tests/fixtures/mock-project/file.tmp");
 ///
@@ -28,6 +28,17 @@ use crate::evaluator::{self, File, types::Result, utils};
 /// ```
 #[derive(Debug, Default)]
 pub struct Evaluator {
+    /// A list of previously encountered git roots (directories with a `.git` inside them).
+    ///
+    /// This is an optimisation which allows frequent evaluations in the same/similar directory
+    /// trees to skip traversal of the common ancestor directories, by jumping straight to the
+    /// commonest (already encountered) git root.
+    git_roots: RwLock<Vec<PathBuf>>,
+
+    /// A map of previously parsed `.gitignore` files.
+    ///
+    /// This is an optimisation which allows the evaluator to avoid re-parsing frequently accessed
+    /// `.gitignore` files.
     files: Mutex<HashMap<PathBuf, Arc<File>>>,
 }
 
@@ -41,24 +52,74 @@ impl Evaluator {
     /// # Examples
     ///
     /// ```rust
-    /// use std::path::Path;
     /// use ignored::evaluator::Evaluator;
     ///
-    /// let path = Path::new("tests/fixtures/mock-project/file.tmp");
-    ///
+    /// # std::fs::create_dir("tests/fixtures/mock-project/.git");
     /// let evaluator = Evaluator::default();
-    /// let ignored = evaluator.is_ignored(path);
+    /// let ignored = evaluator.is_ignored("tests/fixtures/mock-project/file.tmp");
     ///
     /// assert!(ignored);
     /// ```
     #[must_use]
     pub fn is_ignored(&self, path: impl AsRef<Path>) -> bool {
-        let parts = path.as_ref().iter().collect::<Vec<&OsStr>>();
+        let closest_already_encountered_git_root =
+            self.get_closest_already_encountered_git_root(&path);
 
-        let mut ignored = false;
+        let path_parts = path.as_ref().iter().collect::<Vec<&OsStr>>();
+        let closest_already_encountered_git_root_offset = closest_already_encountered_git_root
+            .as_ref()
+            .map_or(1, |root| root.components().count());
 
-        for i in 1..=parts.len() {
-            let base_path: PathBuf = parts[0..i].iter().collect();
+        let mut is_in_git_root = closest_already_encountered_git_root.is_some();
+        let mut is_ignored = false;
+
+        for i in closest_already_encountered_git_root_offset..path_parts.len() {
+            let base_path: PathBuf = path_parts[0..i].iter().collect();
+
+            if closest_already_encountered_git_root
+                .as_ref()
+                .is_some_and(|git_root| git_root == &base_path)
+            {
+                // This is the git root we've already identified, no need to add it to the git
+                // roots list.
+            } else if base_path.join(".git").exists() {
+                // We've encountered this git root for the first time, we need to update our list of
+                // encountered git roots. We also might already be in a git root (i.e. `.git` in a
+                // subdirectory of another git root), in which case we need to reset our current
+                // ignored decision.
+
+                if is_in_git_root {
+                    // We've reached _another_ git root, even though we're already in a git root (i.e.
+                    // a repo inside a repo). We should reset our current ignored decision.
+                    is_ignored = false;
+
+                    log::debug!(
+                        "Encountered recursive git root at: {}",
+                        base_path.as_path().display()
+                    );
+                } else {
+                    is_in_git_root = true;
+
+                    log::debug!("Encountered git root at: {}", base_path.as_path().display());
+                }
+
+                match self.git_roots.write() {
+                    Ok(mut guard) => {
+                        guard.push(base_path.clone());
+                    }
+                    Err(e) => {
+                        log::error!(
+                            "Unable to update git roots with newly encountered git root ({}): {}",
+                            base_path.display(),
+                            e
+                        );
+                    }
+                }
+            } else {
+                // We've still not reached a git root (i.e. a `.git` folder). Conforming to git's
+                // semantics this means any `.gitignore` files don't apply.
+                continue;
+            }
 
             let potential_gitignore = base_path.join(".gitignore");
 
@@ -84,7 +145,7 @@ impl Evaluator {
 
             // NB: Because `[0..=i]` is inclusive (and the range driving this loop starts at 1) it's
             // effectively the same as `[0..i+1]`, which is why it works to select the parent.
-            let parent_path = parts[0..=i].iter().collect::<PathBuf>().join("");
+            let parent_path = path_parts[0..=i].iter().collect::<PathBuf>().join("");
 
             if gitignore_file
                 .is_ignored(parent_path.as_path())
@@ -100,7 +161,7 @@ impl Evaluator {
                 // vendor/
                 // !vendor/keep.me
                 // ```
-                ignored = true;
+                is_ignored = true;
 
                 log::debug!(
                     "{} is ignored so {} is ignored by association.",
@@ -118,13 +179,42 @@ impl Evaluator {
                 // We _have to_ check patterns in the higher levels _first_ because
                 // they might ignore whole directories which will prevent evaluations
                 // in the lower levels from having any effect.
-                ignored = result;
+                is_ignored = result;
             }
         }
 
-        log::debug!("{} is ignored: {ignored}", path.as_ref().display());
+        log::debug!("{} is ignored: {is_ignored}", path.as_ref().display());
 
-        ignored
+        is_ignored
+    }
+
+    /// Get the closest already encountered git root which was found in a previous traversal of the
+    /// same directory tree.
+    ///
+    /// This _only_ looks for already encountered git roots, and even when one is returned,
+    /// doesn't guarantee another git root further down the directory tree won't be encountered
+    /// (i.e. a `.git` where there is a `.git` in a parent directory).
+    fn get_closest_already_encountered_git_root(&self, path: impl AsRef<Path>) -> Option<PathBuf> {
+        if let Ok(already_encountered_git_roots) = self.git_roots.read() {
+            return already_encountered_git_roots
+                .iter()
+                .fold(None, |previous_match, git_root| {
+                    if !path.as_ref().starts_with(git_root) {
+                        return previous_match;
+                    }
+
+                    if previous_match
+                        .is_none_or(|previous_match| path.as_ref().starts_with(previous_match))
+                    {
+                        return Some(git_root);
+                    }
+
+                    previous_match
+                })
+                .map(std::borrow::ToOwned::to_owned);
+        }
+
+        None
     }
 
     /// Parse a `.gitignore` file at the given path, or return a cached version if it has already been parsed

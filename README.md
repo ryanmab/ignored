@@ -37,7 +37,6 @@ The macro uses a global evaluator that caches discovered `.gitignore` files and 
 for improved performance across repeated calls.
 
 ```rust
-use std::path::Path;
 use ignored::is_ignored;
 
 let ignored = is_ignored!("tests/fixtures/mock-project/file.tmp");
@@ -52,7 +51,6 @@ It gives you explicit control over caching - for example, allowing multiple eval
 and is useful when the global cache used by `is_ignored!` is not desirable.
 
 ```rust
-use std::path::Path;
 use ignored::evaluator::Evaluator;
 
 let evaluator = Evaluator::default();

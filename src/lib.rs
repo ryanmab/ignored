@@ -37,9 +37,9 @@
 //! for improved performance across repeated calls.
 //!
 //! ```rust
-//! use std::path::Path;
 //! use ignored::is_ignored;
 //!
+//! # std::fs::create_dir("tests/fixtures/mock-project/.git");
 //! let ignored = is_ignored!("tests/fixtures/mock-project/file.tmp");
 //!
 //! assert!(ignored);
@@ -52,9 +52,9 @@
 //! and is useful when the global cache used by `is_ignored!` is not desirable.
 //!
 //! ```rust
-//! use std::path::Path;
 //! use ignored::evaluator::Evaluator;
 //!
+//! # std::fs::create_dir("tests/fixtures/mock-project/.git");
 //! let evaluator = Evaluator::default();
 //! let ignored = evaluator.is_ignored("tests/fixtures/mock-project/file.tmp");
 //!
