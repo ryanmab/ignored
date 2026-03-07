@@ -27,6 +27,7 @@ pub static EVALUATOR: OnceLock<Evaluator> = OnceLock::new();
 /// use std::path::Path;
 /// use ignored::is_ignored;
 ///
+/// # std::fs::create_dir("tests/fixtures/mock-project/.git");
 /// let ignored = is_ignored!("tests/fixtures/mock-project/file.tmp");
 ///
 /// assert!(ignored);
@@ -45,9 +46,7 @@ mod tests {
     use crate::utils;
     use std::{path::PathBuf, process::Command};
 
-    use rstest::rstest;
-
-    #[rstest]
+    #[test_log::test(rstest::rstest)]
     #[case(vec!["root.txt"])]
     #[case(vec!["src","root.txt"])]
     #[case(vec!["build","artifact.bin"])]
@@ -144,20 +143,21 @@ mod tests {
     #[case(vec!["builder"])]
     #[case(vec!["build"])]
     #[case(vec!["unicode","fileé.txt"])]
+    #[case(vec!["ignored_outside_git_root.txt"])]
     fn test_matches_git_check_ignore(#[case] path: Vec<&str>) {
         let temp = tempfile::tempdir().expect("Should be able to create a temporary directory");
-        let repo_path = temp.path();
-        let relative_path = path.iter().collect::<PathBuf>();
 
-        utils::copy_recursively("tests/fixtures/mock-project", repo_path)
+        utils::copy_recursively("tests/fixtures/", temp.path())
             .expect("Should be able to copy the mock project");
+        let repo_path = temp.path().join("mock-project");
 
         Command::new("git")
             .arg("init")
-            .arg(repo_path)
+            .arg(repo_path.as_path())
             .output()
             .expect("Should be able to initialize a git repository");
 
+        let relative_path = path.iter().collect::<PathBuf>();
         let file_path = repo_path
             .iter()
             .filter_map(|part| part.to_str())
@@ -175,18 +175,62 @@ mod tests {
         );
     }
 
-    #[test]
+    #[test_log::test(test)]
     fn test_handles_negation() {
         let temp = tempfile::tempdir().expect("Should be able to create a temporary directory");
-        let repo_path = temp.path();
 
-        utils::copy_recursively("tests/fixtures/mock-project", repo_path)
+        utils::copy_recursively("tests/fixtures/", temp.path())
             .expect("Should be able to copy the mock project");
+        let repo_path = temp.path().join("mock-project");
+
+        Command::new("git")
+            .arg("init")
+            .arg(repo_path.as_path())
+            .output()
+            .expect("Should be able to initialize a git repository");
 
         let not_negated = PathBuf::from_iter(vec!["double_negation/important.tmp"]);
         let negated = "important.log";
 
-        assert!(is_ignored!(repo_path.join(not_negated).as_path()));
-        assert!(!is_ignored!(repo_path.join(negated).as_path()));
+        assert!(is_ignored!(repo_path.join(not_negated)));
+        assert!(!is_ignored!(repo_path.join(negated)));
+    }
+
+    #[test_log::test(test)]
+    fn test_observes_recursive_git_roots_when_ignoring() {
+        let temp = tempfile::tempdir().expect("Should be able to create a temporary directory");
+
+        utils::copy_recursively("tests/fixtures/", temp.path())
+            .expect("Should be able to copy the mock project");
+        let repo_path = temp.path().join("mock-project");
+
+        // Initialise a parent git root (above `mock-project`). This means the `.gitignore`
+        // which lists `ignored_outside_git_root.txt` _is_ inside a git root (and therefore)
+        // applicable to the `mock-project` folder, if there isn't a child git root inside of
+        // `mock-project`
+        Command::new("git")
+            .arg("init")
+            .arg(temp.path())
+            .output()
+            .expect("Should be able to initialize parent git repository");
+
+        utils::copy_recursively("tests/fixtures/mock-project", repo_path.as_path())
+            .expect("Should be able to copy the mock project");
+
+        Command::new("git")
+            .arg("init")
+            .arg(repo_path.as_path())
+            .output()
+            .expect("Should be able to initialize child git repository");
+
+        // Shouldn't be ignored as even though the `.gitignore` which ignores this file is now
+        // inside a git root too, there's still a child git root which resets the decision
+        assert!(!is_ignored!(repo_path.join("ignored_outside_git_root.txt")));
+
+        // Check this behavior also matches the git cli
+        assert!(!crate::utils::git_check_ignore(
+            repo_path.as_path(),
+            repo_path.join("ignored_outside_git_root.txt").as_path()
+        ));
     }
 }
