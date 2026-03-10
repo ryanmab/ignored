@@ -279,7 +279,7 @@ impl Evaluator {
                     }
 
                     if previous_match
-                        .is_none_or(|previous_match| path.as_ref().starts_with(previous_match))
+                        .is_none_or(|previous_match| git_root.as_ref().starts_with(previous_match))
                     {
                         return Some(git_root);
                     }
