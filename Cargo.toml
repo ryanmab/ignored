@@ -1,6 +1,6 @@
 [package]
 name = "ignored"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2024"
 rust-version = "1.87.0"
 authors = ["Ryan Maber <ryan@ryanmaber.com>"]

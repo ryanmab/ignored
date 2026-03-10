@@ -25,7 +25,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! ignored = "0.0.2"
+//! ignored = "0.0.3"
 //! ```
 //!
 //! ### Macro
