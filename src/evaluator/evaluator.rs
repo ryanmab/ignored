@@ -343,3 +343,85 @@ impl Evaluator {
         Ok(Some(gitignore_file))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        path::PathBuf,
+        str::FromStr,
+        sync::{Mutex, RwLock},
+    };
+
+    use rstest::rstest;
+
+    use crate::evaluator::Evaluator;
+
+    #[rstest]
+    #[case(
+        vec![],
+        "some/path/",
+        None
+    )]
+    #[case(
+        vec![
+            PathBuf::from_str("some/path/").unwrap()
+        ],
+        "some/path/here/1",
+        Some(PathBuf::from_str("some/path/").unwrap())
+    )]
+    #[case(
+        vec![
+            PathBuf::from_str("some/path/here/").unwrap(),
+            PathBuf::from_str("some/path/").unwrap()
+        ],
+        "some/path/here/1",
+        Some(PathBuf::from_str("some/path/here/").unwrap())
+    )]
+    #[case(
+        vec![
+            PathBuf::from_str("some/path/").unwrap(),
+            PathBuf::from_str("some/path/here/").unwrap()
+        ],
+        "some/path/here/1",
+        Some(PathBuf::from_str("some/path/here/").unwrap())
+    )]
+    #[case(
+        vec![
+            PathBuf::from_str("some/path/").unwrap(),
+            PathBuf::from_str("some/path/here/").unwrap()
+        ],
+        "different/parent/some/path/here/1",
+        None
+    )]
+    #[case(
+        vec![
+            PathBuf::from_str("some/path/").unwrap(),
+            PathBuf::from_str("some/path/here/").unwrap()
+        ],
+        "unrelated/path",
+        None
+    )]
+    #[case(
+        vec![
+            PathBuf::from_str("some/path/").unwrap(),
+            PathBuf::from_str("some/path/here/").unwrap()
+        ],
+        "some/",
+        None
+    )]
+    pub fn test_get_closest_already_encountered_git_root(
+        #[case] git_roots: Vec<PathBuf>,
+        #[case] path: &str,
+        #[case] expected_git_root: Option<PathBuf>,
+    ) {
+        let evaluator = Evaluator {
+            git_roots: RwLock::new(git_roots),
+            files: Mutex::default(),
+        };
+
+        assert_eq!(
+            evaluator.get_closest_already_encountered_git_root(path),
+            expected_git_root
+        );
+    }
+}
