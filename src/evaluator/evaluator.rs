@@ -6,6 +6,7 @@ use std::{
 };
 
 use crate::evaluator::{self, File, types::Result, utils};
+
 /// An evaluator for `.gitignore` files in a given directory and its parent directories.
 ///
 /// The evaluator maintains an internal cache of parsed `.gitignore` files to optimize performance when evaluating
@@ -78,9 +79,14 @@ impl Evaluator {
 
         // Patterns read from $GIT_DIR/info/exclude.
         if let Some(git_root) = git_root {
-            if let Some(is_ignored) = self.evaluate_git_exclude_file(git_root, path) {
+            if let Some(is_ignored) = self.evaluate_git_exclude_file(git_root, path.as_ref()) {
                 return is_ignored;
             }
+        }
+
+        // Patterns read from the file specified by the configuration variable core.excludesFile.
+        if let Some(is_ignored) = self.evaluate_global_git_excludes_file(path.as_ref()) {
+            return is_ignored;
         }
 
         false
@@ -240,6 +246,48 @@ impl Evaluator {
             Err(e) => {
                 log::error!(
                     "Failed to read .gitignore file at {}: {:?}",
+                    exclude_file.display(),
+                    e
+                );
+
+                None
+            }
+        };
+
+        if let Some(gitignore_file) = gitignore_file {
+            if let Some(is_ignored) = gitignore_file.is_ignored(&path) {
+                log::debug!(
+                    "{} is ignored by {}: {is_ignored}",
+                    exclude_file.as_path().display(),
+                    path.as_ref().display()
+                );
+
+                return Some(is_ignored);
+            }
+        }
+
+        None
+    }
+
+    /// Evaluate the users global `.gitignore` file (located by default at `$XDG_CONFIG_HOME/git/ignore`, or
+    /// if `$XDG_CONFIG_HOME` is either not set or empty, `$HOME/.config/git/ignore.`, and customised using
+    /// `core.excludesfile` in `gitconfig`).
+    ///
+    /// This is the third of three methods of ignoring files in git.
+    ///
+    /// This follows the precedence rules defined in the [git documentation](https://git-scm.com/docs/gitignore#_description),
+    /// and the git config rules defined in the [git documentation](https://git-scm.com/docs/git-config#FILES).
+    ///
+    /// This method returns true or false, which denotes whether the file is ignored or not, only if the path was
+    /// matched in the global git ignore file. If not, [`Option::None`] will be returned, denoting that the path was not listed.
+    fn evaluate_global_git_excludes_file(&self, path: impl AsRef<Path>) -> Option<bool> {
+        let exclude_file = utils::get_global_git_exclude_file_path()?;
+
+        let gitignore_file = match self.get_or_parse_gitignore(&exclude_file) {
+            Ok(file) => file,
+            Err(e) => {
+                log::error!(
+                    "Failed to read global .gitignore file at {}: {:?}",
                     exclude_file.display(),
                     e
                 );
