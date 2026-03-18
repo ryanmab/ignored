@@ -91,9 +91,9 @@ pub fn get_gitignore_pattern_fuzzing_strategy() -> impl Strategy<Value = String>
         let mut s = parts.join("");
 
         match fastrand::usize(0..=6) {
-            0 => s = format!("# {}", s),
-            1 => s = format!("!{}", s),
-            2 => s = format!("/{}", s),
+            0 => s = format!("# {s}"),
+            1 => s = format!("!{s}"),
+            2 => s = format!("/{s}"),
             _ => {}
         }
 
