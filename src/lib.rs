@@ -9,14 +9,12 @@
 
 //! # Ignored
 //!
-//! > **Note:** This crate _does not currently_ evaluate patterns defined in the global excludes file configured
-//! > via `core.excludesFile`. Support for this may be added in the future.
-//!
-//! A Rust implementation of the `.gitignore` file format for quickly checking whether a path is ignored by git - without invoking the git cli.
+//! A Rust implementation of the `.gitignore` file format for quickly checking whether a path is ignored by
+//! git - without invoking the git cli.
 //!
 //! This crate aims for _full behavioural parity_ with git's handling of `.gitignore` files, including support for
-//! all core features of the format such as negation patterns, directory-only patterns, and nested `.gitignore`
-//! hierarchies.
+//! all core features of the format such as negation patterns, directory-only patterns, nested `.gitignore`
+//! hierarchies, and local and global exclusion files.
 //!
 //! The full specification of the `.gitignore` format, along with details on file precedence and hierarchy, can be
 //! found in the [Git documentation](https://git-scm.com/docs/gitignore#_description).
