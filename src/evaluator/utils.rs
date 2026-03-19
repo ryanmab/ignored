@@ -69,7 +69,7 @@ pub fn get_global_git_exclude_file_path() -> Option<PathBuf> {
     log::debug!("Git config path defined as: {config_path:?}");
 
     if let Some(path) = config_path {
-        if let Some(exclude_file) = get_exclude_file_config_from_gitconfig(path) {
+        if let Some(exclude_file) = get_exclude_file_config_from_global_git_config(path) {
             return Some(exclude_file);
         }
     }
@@ -78,22 +78,22 @@ pub fn get_global_git_exclude_file_path() -> Option<PathBuf> {
     // set or empty, `$HOME/.config/git/ignore` is used instead (handled by xdir).
     let default = xdir::config().map(|path| path.join("git").join("ignore"));
 
-    log::debug!("No core.excludesfile set in gitconfig file. Using default path: {default:?}");
+    log::debug!("No core.excludesfile set in git config file. Using default path: {default:?}");
 
     default
 }
 
-/// Parse a global `gitconfig` file and extract the `excludesfile` config if present.
+/// Parse a global git config file and extract the `excludesfile` config if present.
 ///
-/// If the path is not present, or the `gitconfig` file could not be read, None will be
+/// If the path is not present, or the git config file could not be read, [`Option::None`] will be
 /// returned.
-pub fn get_exclude_file_config_from_gitconfig(gitconfig: impl AsRef<Path>) -> Option<PathBuf> {
+pub fn get_exclude_file_config_from_global_git_config(path: impl AsRef<Path>) -> Option<PathBuf> {
     static REGEX: OnceLock<Regex> = OnceLock::new();
 
-    let gitconfig = gitconfig.as_ref();
+    let config_path = path.as_ref();
 
-    if !gitconfig.exists() {
-        log::trace!("Gitconfig file not found at: {}", gitconfig.display());
+    if !config_path.exists() {
+        log::trace!("Config file not found at: {}", config_path.display());
 
         return None;
     }
@@ -102,8 +102,11 @@ pub fn get_exclude_file_config_from_gitconfig(gitconfig: impl AsRef<Path>) -> Op
     // resulting `core.excludesfile` path) in memory to prevent repeated accesses requiring contents
     // re-matching? The assumption built-in here is that this function will be called infrequently
     // (i.e. not in a loop and likely not for every evaluation), however that isn't guaranteed.
-    let Ok(contents) = std::fs::read_to_string(gitconfig) else {
-        log::warn!("Unable to read Gitconfig file at: {} ", gitconfig.display());
+    let Ok(contents) = std::fs::read_to_string(config_path) else {
+        log::warn!(
+            "Unable to read Gitconfig file at: {} ",
+            config_path.display()
+        );
 
         return None;
     };
@@ -111,7 +114,7 @@ pub fn get_exclude_file_config_from_gitconfig(gitconfig: impl AsRef<Path>) -> Op
     let captures = REGEX
         .get_or_init(|| {
             regex::Regex::new("(?i)excludesfile\\s*=[\\s\"]*(?<path>[^\\s\"]+)")
-                .expect("gitconfig exclude file regex should always be valid")
+                .expect("Excludes file regex for config file should always be valid")
         })
         .captures_iter(&contents);
 
@@ -122,8 +125,8 @@ pub fn get_exclude_file_config_from_gitconfig(gitconfig: impl AsRef<Path>) -> Op
         .map(PathBuf::from);
 
     log::trace!(
-        "Gitconfig file at {} defines core.excludesfile as: {:?}",
-        gitconfig.display(),
+        "Config file at {} defines core.excludesfile as: {:?}",
+        config_path.display(),
         path
     );
 
@@ -138,8 +141,8 @@ mod tests {
     use temp_env::with_vars;
     use tempfile::TempDir;
 
-    /// Write a gitconfig file with arbitrary contents
-    fn write_gitconfig(path: &Path, contents: &str) {
+    /// Write a config file with arbitrary contents
+    fn write_git_config(path: &Path, contents: &str) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, contents).unwrap();
     }
@@ -251,13 +254,13 @@ mod tests {
             .collect();
 
         if let Some(contents) = home_contents {
-            let home_gitconfig = temp_home.path().join(".config").join("git").join("config");
-            write_gitconfig(&home_gitconfig, contents);
+            let home_config_path = temp_home.path().join(".config").join("git").join("config");
+            write_git_config(&home_config_path, contents);
         }
 
         if let Some(contents) = xdg_contents {
-            let xdg_gitconfig = temp_xdg.path().join("git").join("config");
-            write_gitconfig(&xdg_gitconfig, contents);
+            let xdg_config_path = temp_xdg.path().join("git").join("config");
+            write_git_config(&xdg_config_path, contents);
         }
 
         let env_vec: Vec<(&str, Option<&Path>)> = env_vars
@@ -385,13 +388,13 @@ mod tests {
             .collect();
 
         if let Some(contents) = home_contents {
-            let home_gitconfig = temp_home.path().join(".config").join("git").join("config");
-            write_gitconfig(&home_gitconfig, contents);
+            let home_config_path = temp_home.path().join(".config").join("git").join("config");
+            write_git_config(&home_config_path, contents);
         }
 
         if let Some(contents) = xdg_contents {
-            let xdg_gitconfig = temp_xdg.path().join("git").join("config");
-            write_gitconfig(&xdg_gitconfig, contents);
+            let xdg_config_path = temp_xdg.path().join("git").join("config");
+            write_git_config(&xdg_config_path, contents);
         }
 
         let env_vec: Vec<(&str, Option<&Path>)> = env_vars
