@@ -79,7 +79,7 @@ pub fn get_exclude_file_config_from_gitconfig(gitconfig: impl AsRef<Path>) -> Op
         return None;
     }
 
-    let regex = regex::Regex::new("excludesfile\\s*=\\s*(?<path>[^\\s]+)")
+    let regex = regex::Regex::new("(?i)excludesfile\\s*=\\s*(?<path>[^\\s]+)")
         .expect("gitconfig exclude file regex should always be valid");
 
     let Ok(contents) = std::fs::read_to_string(gitconfig) else {
@@ -88,9 +88,10 @@ pub fn get_exclude_file_config_from_gitconfig(gitconfig: impl AsRef<Path>) -> Op
         return None;
     };
 
-    let captures = regex.captures(&contents);
+    let captures = regex.captures_iter(&contents);
 
     let path = captures
+        .last()
         .and_then(|captures| captures.name("path"))
         .map(|m| m.as_str())
         .map(PathBuf::from);
@@ -107,13 +108,13 @@ pub fn get_exclude_file_config_from_gitconfig(gitconfig: impl AsRef<Path>) -> Op
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::process::Stdio;
     use temp_env::with_vars;
     use tempfile::TempDir;
 
     /// Write a gitconfig file with arbitrary contents
-    fn write_gitconfig(path: &PathBuf, contents: &str) {
+    fn write_gitconfig(path: &Path, contents: &str) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, contents).unwrap();
     }
@@ -123,8 +124,9 @@ mod tests {
         Some("[core]\n\texcludesfile = /home/excludes\n"),
         None,
         vec![
-            "HOME",
-            "USERPROFILE"
+            ("HOME", true),
+            ("USERPROFILE", true),
+            ("XDG_CONFIG_HOME", false),
         ],
         Some(PathBuf::from("/home/excludes"))
     )]
@@ -132,9 +134,9 @@ mod tests {
         None,
         Some("[core]\n\texcludesfile = /xdg/excludes\n"),
         vec![
-            "HOME",
-            "USERPROFILE",
-            "XDG_CONFIG_HOME",
+            ("HOME", true),
+            ("USERPROFILE", true),
+            ("XDG_CONFIG_HOME", true),
         ],
         Some(PathBuf::from("/xdg/excludes"))
     )]
@@ -142,27 +144,29 @@ mod tests {
         Some("[core]\n\texcludesfile = /home/excludes\n"),
         Some("[core]\n\texcludesfile = /xdg/excludes\n"),
         vec![
-            "HOME",
-            "USERPROFILE",
+            ("HOME", true),
+            ("USERPROFILE", true),
+            ("XDG_CONFIG_HOME", true),
         ],
-        Some(PathBuf::from("/home/excludes"))
+        Some(PathBuf::from("/xdg/excludes"))
     )]
     #[case(
         Some("[core]\n\texcludesfile = /home/excludes\n"),
         Some("[core]\n\texcludesfile = /xdg/excludes\n"),
         vec![
-            "HOME",
-            "XDG_CONFIG_HOME",
+            ("HOME", true),
+            ("XDG_CONFIG_HOME", true),
+            ("USERPROFILE", false),
         ],
-        Some(PathBuf::from("/xdg/excludes")) // XDG takes precedence over HOME
+        Some(PathBuf::from("/xdg/excludes")) // XDG takes precedence
     )]
     #[case(
         Some("[CORE]\n# comment\n excludesfile   =   /home/excludes  \n"),
         Some("[core]\n\texcludesfile=/xdg/excludes\n"),
         vec![
-            "HOME",
-            "USERPROFILE",
-            "XDG_CONFIG_HOME",
+            ("HOME", true),
+            ("USERPROFILE", true),
+            ("XDG_CONFIG_HOME", true),
         ],
         Some(PathBuf::from("/xdg/excludes")) // XDG still takes precedence
     )]
@@ -170,55 +174,81 @@ mod tests {
         None,
         Some("[core]\n  excludesfile   =   /xdg/excludes   \n"),
         vec![
-            "HOME",
-            "USERPROFILE",
-            "XDG_CONFIG_HOME",
+            ("HOME", true),
+            ("USERPROFILE", true),
+            ("XDG_CONFIG_HOME", true),
         ],
         Some(PathBuf::from("/xdg/excludes"))
     )]
-    fn test_exclude_file_paths(
+    #[case(
+        Some("[core]\nexcludesfile = /first/path\n[core]\nexcludesfile = /second/path\n"),
+        None,
+        vec![
+            ("HOME", true),
+            ("USERPROFILE", true),
+            ("XDG_CONFIG_HOME", false),
+        ],
+        Some(PathBuf::from("/second/path"))
+    )]
+    #[case(
+        Some("[core]\n\texcludesfile\t=\t/path/with/spaces\n"),
+        None,
+        vec![
+            ("HOME", true),
+            ("USERPROFILE", true),
+            ("XDG_CONFIG_HOME", false),
+        ],
+        Some(PathBuf::from("/path/with/spaces"))
+    )]
+    fn test_parsing_excludes_file_from_config(
         #[case] home_contents: Option<&str>,
         #[case] xdg_contents: Option<&str>,
-        #[case] env_vars: Vec<&str>,
+        #[case] env_keys: Vec<(&str, bool)>,
         #[case] expected_exclude: Option<PathBuf>,
     ) {
         let temp_home = TempDir::new().unwrap();
         let temp_xdg = TempDir::new().unwrap();
 
-        let home_path = temp_home.path();
-        let xdg_path = temp_xdg.path();
+        let env_vars: Vec<(&str, Option<PathBuf>)> = env_keys
+            .into_iter()
+            .map(|(key, set)| {
+                let path = if set {
+                    match key {
+                        "HOME" | "USERPROFILE" => Some(temp_home.path().to_path_buf()),
+                        "XDG_CONFIG_HOME" => Some(temp_xdg.path().to_path_buf()),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                (key, path)
+            })
+            .collect();
 
         if let Some(contents) = home_contents {
-            let home_gitconfig = home_path.join(".config").join("git").join("config");
+            let home_gitconfig = temp_home.path().join(".config").join("git").join("config");
             write_gitconfig(&home_gitconfig, contents);
         }
 
         if let Some(contents) = xdg_contents {
-            let xdg_gitconfig = xdg_path.join("git").join("config");
+            let xdg_gitconfig = temp_xdg.path().join("git").join("config");
             write_gitconfig(&xdg_gitconfig, contents);
         }
 
-        let vars = env_vars
+        let env_vec: Vec<(&str, Option<&Path>)> = env_vars
             .iter()
-            .map(|name| match *name {
-                "HOME" | "USERPROFILE" => (*name, Some(home_path)),
-                "XDG_CONFIG_HOME" => (*name, Some(xdg_path)),
-                _ => unreachable!(),
-            })
-            .collect::<Vec<_>>();
+            .map(|(key, opt_path)| (*key, opt_path.as_ref().map(PathBuf::as_path)))
+            .collect();
 
-        with_vars(vars, || {
-            use std::process::Command;
-
+        with_vars(env_vec, || {
             let path = super::get_global_git_exclude_file_path();
 
             assert_eq!(
                 path, expected_exclude,
-                "{path:?} does not match the patch expected in the data provider: {expected_exclude:?}"
+                "{path:?} does not match expected: {expected_exclude:?}"
             );
 
-            // Run the git cli to see the _actual_ path returned by git (for parity)
-            let output = Command::new("git")
+            let output = std::process::Command::new("git")
                 .arg("config")
                 .arg("--get")
                 .arg("core.excludesfile")
@@ -226,20 +256,17 @@ mod tests {
                 .output()
                 .expect("failed to run git");
 
-            let git_returned_path = String::from_utf8(output.stdout)
-                .ok()
-                .and_then(|stdout| {
-                    if !stdout.is_empty() {
-                        return Some(stdout.trim_end().to_string());
-                    }
+            let git_returned_path = String::from_utf8(output.stdout).ok().and_then(|stdout| {
+                if stdout.is_empty() {
+                    return None;
+                }
 
-                    None
-                })
-                .map(PathBuf::from);
+                Some(PathBuf::from(stdout.trim_end()))
+            });
 
             assert_eq!(
                 path, git_returned_path,
-                "{path:?} does not match the path returned by the git cli: {git_returned_path:?}"
+                "{path:?} does not match git CLI path: {git_returned_path:?}"
             );
         });
     }
@@ -248,83 +275,106 @@ mod tests {
     #[case(
         None,
         None,
-        vec![],
-    )]
-    #[case(
-        None,
-        None,
         vec![
-            "HOME",
-            "USERPROFILE"
+            ("HOME", false),
+            ("USERPROFILE", false),
+            ("XDG_CONFIG_HOME", false),
         ],
     )]
     #[case(
         None,
         None,
         vec![
-            "HOME",
-            "USERPROFILE",
-            "XDG_CONFIG_HOME",
+            ("HOME", true),
+            ("USERPROFILE", true),
+            ("XDG_CONFIG_HOME", false),
+        ],
+    )]
+    #[case(
+        None,
+        None,
+        vec![
+            ("HOME", true),
+            ("USERPROFILE", true),
+            ("XDG_CONFIG_HOME", true),
         ],
     )]
     #[case(
         Some("[CORE]\n# comment\n"),
         None,
         vec![
-            "HOME",
-            "USERPROFILE",
+            ("HOME", true),
+            ("USERPROFILE", true),
+            ("XDG_CONFIG_HOME", false),
         ],
     )]
     #[case(
         None,
         Some("[CORE]\n# comment\n"),
         vec![
-            "HOME",
-            "USERPROFILE",
+            ("HOME", true),
+            ("USERPROFILE", true),
+            ("XDG_CONFIG_HOME", true),
         ],
     )]
     #[case(
         Some("[CORE]\n# comment\n"),
         Some("[CORE]\n# comment\n"),
         vec![
-            "HOME",
-            "USERPROFILE",
-            "XDG_CONFIG_HOME",
+            ("HOME", true),
+            ("USERPROFILE", true),
+            ("XDG_CONFIG_HOME", true),
+        ],
+    )]
+    #[case(
+        None,
+        None,
+        vec![
+            ("HOME", false),
+            ("USERPROFILE", false),
+            ("XDG_CONFIG_HOME", true),
         ],
     )]
     fn test_handles_defaults_when_excludes_file_is_not_set_in_config(
         #[case] home_contents: Option<&str>,
         #[case] xdg_contents: Option<&str>,
-        #[case] env_vars: Vec<&str>,
+        #[case] env_keys: Vec<(&str, bool)>,
     ) {
         let temp_home = TempDir::new().unwrap();
         let temp_xdg = TempDir::new().unwrap();
 
-        let home_path = temp_home.path();
-        let xdg_path = temp_xdg.path();
+        let env_vars: Vec<(&str, Option<PathBuf>)> = env_keys
+            .into_iter()
+            .map(|(key, set)| {
+                let path = if set {
+                    match key {
+                        "HOME" | "USERPROFILE" => Some(temp_home.path().to_path_buf()),
+                        "XDG_CONFIG_HOME" => Some(temp_xdg.path().to_path_buf()),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                (key, path)
+            })
+            .collect();
 
         if let Some(contents) = home_contents {
-            let home_gitconfig = home_path.join(".config").join("git").join("config");
+            let home_gitconfig = temp_home.path().join(".config").join("git").join("config");
             write_gitconfig(&home_gitconfig, contents);
         }
 
         if let Some(contents) = xdg_contents {
-            let xdg_gitconfig = xdg_path.join("git").join("config");
+            let xdg_gitconfig = temp_xdg.path().join("git").join("config");
             write_gitconfig(&xdg_gitconfig, contents);
         }
 
-        let vars = env_vars
+        let env_vec: Vec<(&str, Option<&Path>)> = env_vars
             .iter()
-            .map(|name| match *name {
-                "HOME" | "USERPROFILE" => (*name, Some(home_path)),
-                "XDG_CONFIG_HOME" => (*name, Some(xdg_path)),
-                _ => unreachable!(),
-            })
-            .collect::<Vec<_>>();
+            .map(|(key, opt_path)| (*key, opt_path.as_ref().map(PathBuf::as_path)))
+            .collect();
 
-        with_vars(vars, || {
-            use std::process::Command;
-
+        with_vars(env_vec, || {
             let path = super::get_global_git_exclude_file_path();
 
             assert!(
@@ -332,9 +382,7 @@ mod tests {
                 "{path:?} is not the default excludes file path (ending in .config/git/ignore)"
             );
 
-            // Run the git cli to see the that git doesn't identify an excludes file defined in
-            // config (for parity)
-            let output = Command::new("git")
+            let output = std::process::Command::new("git")
                 .arg("config")
                 .arg("--get")
                 .arg("core.excludesfile")
