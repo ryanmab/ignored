@@ -275,7 +275,7 @@ impl Evaluator {
 
     /// Evaluate the users global `.gitignore` file (located by default at `$XDG_CONFIG_HOME/git/ignore`, or
     /// if `$XDG_CONFIG_HOME` is either not set or empty, `$HOME/.config/git/ignore.`, and customised using
-    /// `core.excludesfile` in `gitconfig`).
+    /// `core.excludesfile` in global git configuration).
     ///
     /// This is the third of three methods of ignoring files in git.
     ///
