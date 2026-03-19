@@ -43,7 +43,7 @@ macro_rules! is_ignored {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
+    use std::{io::Write, path::MAIN_SEPARATOR_STR};
     use temp_env::with_vars;
     use tempfile::TempDir;
 
@@ -322,12 +322,12 @@ mod tests {
         let home_ignore_file = temp_home.path().join(".config").join("git").join("ignore");
         std::fs::create_dir_all(home_ignore_file.parent().unwrap()).unwrap();
         let mut f = std::fs::File::create(&home_ignore_file).unwrap();
-        writeln!(f, "home_excluded.txt").unwrap();
+        writeln!(f, "home_ignored.txt").unwrap();
 
         let xdg_ignore_file = temp_xdg.path().join("git").join("ignore");
         std::fs::create_dir_all(xdg_ignore_file.parent().unwrap()).unwrap();
         let mut f = std::fs::File::create(&xdg_ignore_file).unwrap();
-        writeln!(f, "xdg_excluded.txt").unwrap();
+        writeln!(f, "xdg_ignored.txt").unwrap();
 
         Command::new("git")
             .arg("init")
@@ -342,7 +342,7 @@ mod tests {
                 ("XDG_CONFIG_HOME", None),
             ],
             || {
-                let file_path = repo_path.join("home_excluded.txt");
+                let file_path = repo_path.join("home_ignored.txt");
 
                 let macro_result = is_ignored!(file_path.as_path());
                 let git_result =
@@ -365,7 +365,7 @@ mod tests {
                 ("XDG_CONFIG_HOME", Some(temp_xdg.path())),
             ],
             || {
-                let file_path = repo_path.join("xdg_excluded.txt");
+                let file_path = repo_path.join("xdg_ignored.txt");
 
                 let macro_result = is_ignored!(file_path.as_path());
                 let git_result =
@@ -388,11 +388,9 @@ mod tests {
         let repo_dir = TempDir::new().unwrap();
         let repo_path = repo_dir.path().join("mock-project");
 
-        utils::copy_recursively("tests/fixtures/", &repo_path).unwrap();
-
         let git_excludes_file = temp_home.path().join("custom_global_ignore");
         let mut f = std::fs::File::create(&git_excludes_file).unwrap();
-        writeln!(f, "excluded.txt").unwrap();
+        writeln!(f, "ignored.txt").unwrap();
 
         let config_path = temp_home.path().join(".config").join("git");
         std::fs::create_dir_all(&config_path)
@@ -402,7 +400,13 @@ mod tests {
             config_path.join("config"),
             format!(
                 "[core]\n\texcludesfile=/some-invalid-path\n[core]\n\texcludesfile={}",
-                git_excludes_file.to_str().unwrap(),
+                git_excludes_file
+                    .to_str()
+                    .unwrap()
+                    // NB: This is important for Git on Windows. Presumably Git interprets
+                    // the backslashes as escape characters and causes the check ignore command
+                    // to not identify the path as ignored.
+                    .replace(MAIN_SEPARATOR_STR, "/"),
             ),
         )
         .expect("Should always be able to write git config file.");
@@ -420,7 +424,8 @@ mod tests {
                     .output()
                     .expect("Should be able to initialize git repo");
 
-                let file_path = repo_path.join("excluded.txt");
+                let file_path = repo_path.join("ignored.txt");
+
                 let macro_result = is_ignored!(file_path.as_path());
                 let git_result =
                     crate::utils::git_check_ignore(repo_path.as_path(), file_path.as_path());
