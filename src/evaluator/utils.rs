@@ -1,7 +1,10 @@
 use std::{
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
+    sync::OnceLock,
 };
+
+use regex::Regex;
 
 use crate::{
     evaluator::{self, File, Glob, Result},
@@ -47,21 +50,21 @@ pub fn read_gitignore(gitignore_path: impl AsRef<Path>) -> Result<File> {
 pub fn get_global_git_exclude_file_path() -> Option<PathBuf> {
     // When the `XDG_CONFIG_HOME` environment variable is not set or empty,
     // `$HOME/.config/` is used as `$XDG_CONFIG_HOME` (handled by xdir).
-    let xdg_config_home_config = xdir::config().map(|p| p.join("git").join("config"));
+    let config_path = xdir::config().map(|p| p.join("git").join("config"));
 
-    log::debug!("$XDG_CONFIG_HOME git config defined as: {xdg_config_home_config:?}");
+    log::debug!("Git config path defined as: {config_path:?}");
 
-    if let Some(path) = xdg_config_home_config {
+    if let Some(path) = config_path {
         if let Some(exclude_file) = get_exclude_file_config_from_gitconfig(path) {
             return Some(exclude_file);
         }
     }
 
-    // Its default value is `$XDG_CONFIG_HOME/git/ignore`. If `$XDG_CONFIG_HOME` is either not set or empty,
-    // $HOME/.config/git/ignore is used instead (handled by xdir).
+    // Its default value is `$XDG_CONFIG_HOME/git/ignore`. If `$XDG_CONFIG_HOME` is either not
+    // set or empty, `$HOME/.config/git/ignore` is used instead (handled by xdir).
     let default = xdir::config().map(|path| path.join("git").join("ignore"));
 
-    log::debug!("No core.excludesfile set in gitconfig file. Using default path: {default:?}",);
+    log::debug!("No core.excludesfile set in gitconfig file. Using default path: {default:?}");
 
     default
 }
@@ -71,6 +74,8 @@ pub fn get_global_git_exclude_file_path() -> Option<PathBuf> {
 /// If the path is not present, or the `gitconfig` file could not be read, None will be
 /// returned.
 pub fn get_exclude_file_config_from_gitconfig(gitconfig: impl AsRef<Path>) -> Option<PathBuf> {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+
     let gitconfig = gitconfig.as_ref();
 
     if !gitconfig.exists() {
@@ -79,16 +84,22 @@ pub fn get_exclude_file_config_from_gitconfig(gitconfig: impl AsRef<Path>) -> Op
         return None;
     }
 
-    let regex = regex::Regex::new("(?i)excludesfile\\s*=\\s*(?<path>[^\\s]+)")
-        .expect("gitconfig exclude file regex should always be valid");
-
+    // TODO: Is it worth producing a checksum and storing the contents of the file (and the
+    // resulting `core.excludesfile` path) in memory to prevent repeated accesses requiring contents
+    // re-matching? The assumption built-in here is that this function will be called infrequently
+    // (i.e. not in a loop and likely not for every evaluation), however that isn't guaranteed.
     let Ok(contents) = std::fs::read_to_string(gitconfig) else {
         log::warn!("Unable to read Gitconfig file at: {} ", gitconfig.display());
 
         return None;
     };
 
-    let captures = regex.captures_iter(&contents);
+    let captures = REGEX
+        .get_or_init(|| {
+            regex::Regex::new("(?i)excludesfile\\s*=[\\s\"]*(?<path>[^\\s\"]+)")
+                .expect("gitconfig exclude file regex should always be valid")
+        })
+        .captures_iter(&contents);
 
     let path = captures
         .last()
@@ -161,7 +172,7 @@ mod tests {
         Some(PathBuf::from("/xdg/excludes")) // XDG takes precedence
     )]
     #[case(
-        Some("[CORE]\n# comment\n excludesfile   =   /home/excludes  \n"),
+        Some("[CORE]\n# comment\n excludesfile   =   \"/home/excludes\"  \n"),
         Some("[core]\n\texcludesfile=/xdg/excludes\n"),
         vec![
             ("HOME", true),
@@ -181,7 +192,7 @@ mod tests {
         Some(PathBuf::from("/xdg/excludes"))
     )]
     #[case(
-        Some("[core]\nexcludesfile = /first/path\n[core]\nexcludesfile = /second/path\n"),
+        Some("[core]\nexcludesfile = /first/path\n[core]\nexcludesfile = \"/second/path\"\n"),
         None,
         vec![
             ("HOME", true),
