@@ -23,7 +23,7 @@ found in the [Git documentation](https://git-scm.com/docs/gitignore#_description
 
 ```toml
 [dependencies]
-ignored = "0.0.3"
+ignored = "0.0.4"
 ```
 
 ### Macro
