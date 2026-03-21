@@ -1,30 +1,39 @@
-use std::{
-    path::{Path, PathBuf},
-    sync::OnceLock,
-};
+use std::path::{Path, PathBuf};
 
-use regex::Regex;
+use crate::constant;
 
 /// Get the global git exclude file path (defined either by default in `$XDG_CONFIG_HOME`/`$HOME`)
 /// or explicitly set using `core.excludesfile` in the git config file.
 pub fn get_global_git_exclude_file_path() -> Option<PathBuf> {
     // When the `XDG_CONFIG_HOME` environment variable is not set or empty,
     // `$HOME/.config/` is used as `$XDG_CONFIG_HOME` (handled by xdir).
-    let config_path = xdir::config().map(|p| p.join("git").join("config"));
+    let config_path = xdir::config().map(|p| p.join(constant::GLOBAL_GIT_CONFIG_PATH));
 
     log::debug!("Git config path defined as: {config_path:?}");
 
-    if let Some(path) = config_path {
+    if let Some(path) = config_path.as_ref() {
         if let Some(exclude_file) = get_exclude_file_config_from_global_git_config(path) {
             return Some(exclude_file);
         }
     }
 
-    // Its default value is `$XDG_CONFIG_HOME/git/ignore`. If `$XDG_CONFIG_HOME` is either not
-    // set or empty, `$HOME/.config/git/ignore` is used instead (handled by xdir).
-    let default = xdir::config().map(|path| path.join("git").join("ignore"));
+    let legacy_config_path = xdir::home().map(|p| p.join(constant::LEGACY_GLOBAL_GIT_CONFIG_PATH));
 
-    log::debug!("No core.excludesfile set in git config file. Using default path: {default:?}");
+    log::debug!("Legacy git config path defined as: {legacy_config_path:?}");
+
+    if let Some(path) = legacy_config_path.as_ref() {
+        if let Some(exclude_file) = get_exclude_file_config_from_global_git_config(path) {
+            return Some(exclude_file);
+        }
+    }
+
+    // If `$XDG_CONFIG_HOME` is either not set or empty, `$HOME/.config/git/ignore` is
+    // used instead (handled by xdir).
+    let default = xdir::config().map(|p| p.join(constant::DEFAULT_GLOBAL_GIT_EXCLUDE_PATH));
+
+    log::debug!(
+        "No valid core.excludesfile config found in any git config file. Using default path: {default:?}"
+    );
 
     default
 }
@@ -34,8 +43,6 @@ pub fn get_global_git_exclude_file_path() -> Option<PathBuf> {
 /// If the path is not present, or the git config file could not be read, [`Option::None`] will be
 /// returned.
 pub fn get_exclude_file_config_from_global_git_config(path: impl AsRef<Path>) -> Option<PathBuf> {
-    static REGEX: OnceLock<Regex> = OnceLock::new();
-
     let config_path = path.as_ref();
 
     if !config_path.exists() {
@@ -50,21 +57,15 @@ pub fn get_exclude_file_config_from_global_git_config(path: impl AsRef<Path>) ->
     // (i.e. not in a loop and likely not for every evaluation), however that isn't guaranteed.
     let Ok(contents) = std::fs::read_to_string(config_path) else {
         log::warn!(
-            "Unable to read Gitconfig file at: {} ",
+            "Unable to read git config file at: {} ",
             config_path.display()
         );
 
         return None;
     };
 
-    let captures = REGEX
-        .get_or_init(|| {
-            regex::Regex::new("(?i)excludesfile\\s*=[\\s\"]*(?<path>[^\\s\"]+)")
-                .expect("Excludes file regex for config file should always be valid")
-        })
-        .captures_iter(&contents);
-
-    let path = captures
+    let path = constant::GLOBAL_GIT_CONFIG_EXCLUDE_PATH_REGEX
+        .captures_iter(&contents)
         .last()
         .and_then(|captures| captures.name("path"))
         .map(|m| m.as_str())
@@ -86,6 +87,8 @@ mod tests {
     use std::process::Stdio;
     use temp_env::with_vars;
     use tempfile::TempDir;
+
+    use crate::constant;
 
     /// Write a config file with arbitrary contents
     fn write_git_config(path: &Path, contents: &str) {
@@ -200,13 +203,20 @@ mod tests {
             .collect();
 
         if let Some(contents) = home_contents {
-            let home_config_path = temp_home.path().join(".config").join("git").join("config");
-            write_git_config(&home_config_path, contents);
+            write_git_config(
+                &temp_home
+                    .path()
+                    .join(".config")
+                    .join(constant::GLOBAL_GIT_CONFIG_PATH),
+                contents,
+            );
         }
 
         if let Some(contents) = xdg_contents {
-            let xdg_config_path = temp_xdg.path().join("git").join("config");
-            write_git_config(&xdg_config_path, contents);
+            write_git_config(
+                &temp_xdg.path().join(constant::GLOBAL_GIT_CONFIG_PATH),
+                contents,
+            );
         }
 
         let env_vec: Vec<(&str, Option<&Path>)> = env_vars
@@ -240,7 +250,7 @@ mod tests {
 
             assert_eq!(
                 path, git_returned_path,
-                "{path:?} does not match git CLI path: {git_returned_path:?}"
+                "{path:?} does not match git cli path: {git_returned_path:?}"
             );
         });
     }
@@ -334,13 +344,20 @@ mod tests {
             .collect();
 
         if let Some(contents) = home_contents {
-            let home_config_path = temp_home.path().join(".config").join("git").join("config");
-            write_git_config(&home_config_path, contents);
+            write_git_config(
+                &temp_home
+                    .path()
+                    .join(".config")
+                    .join(constant::GLOBAL_GIT_CONFIG_PATH),
+                contents,
+            );
         }
 
         if let Some(contents) = xdg_contents {
-            let xdg_config_path = temp_xdg.path().join("git").join("config");
-            write_git_config(&xdg_config_path, contents);
+            write_git_config(
+                &temp_xdg.path().join(constant::GLOBAL_GIT_CONFIG_PATH),
+                contents,
+            );
         }
 
         let env_vec: Vec<(&str, Option<&Path>)> = env_vars
