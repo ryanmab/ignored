@@ -105,4 +105,5 @@ pub mod lexer;
 #[doc(hidden)]
 pub mod macros;
 
+mod constant;
 mod utils;

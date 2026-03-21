@@ -5,7 +5,10 @@ use std::{
     sync::{Arc, Mutex, RwLock},
 };
 
-use crate::evaluator::{self, File, types::Result, utils};
+use crate::{
+    constant,
+    evaluator::{self, File, types::Result, utils},
+};
 
 /// An evaluator for `.gitignore` files in a given directory and its parent directories.
 ///
@@ -79,14 +82,15 @@ impl Evaluator {
 
         // Patterns read from $GIT_DIR/info/exclude.
         if let Some(ref git_root) = git_root {
-            if let Some(is_ignored) = self.evaluate_git_exclude_file(git_root, path.as_ref()) {
+            if let Some(is_ignored) = self.evaluate_local_git_exclude_file(git_root, path.as_ref())
+            {
                 return is_ignored;
             }
         }
 
         // Patterns read from the file specified by the configuration variable core.excludesFile.
         if let Some(is_ignored) =
-            self.evaluate_global_git_excludes_file(git_root.as_ref(), path.as_ref())
+            self.evaluate_global_git_exclude_file(git_root.as_ref(), path.as_ref())
         {
             return is_ignored;
         }
@@ -128,7 +132,7 @@ impl Evaluator {
             {
                 // This is the git root we've already identified, no need to add it to the git
                 // roots list.
-            } else if base_path.join(".git").exists() {
+            } else if base_path.join(constant::LOCAL_GIT_PATH).exists() {
                 // We've encountered this git root for the first time, we need to update our list of
                 // encountered git roots. We also might already be in a git root (i.e. `.git` in a
                 // subdirectory of another git root), in which case we need to reset our current
@@ -171,7 +175,7 @@ impl Evaluator {
                 continue;
             }
 
-            let potential_gitignore = base_path.join(".gitignore");
+            let potential_gitignore = base_path.join(constant::GITIGNORE_FILE);
 
             let gitignore_file = match self
                 .get_or_parse_gitignore(Option::<&PathBuf>::None, potential_gitignore.as_path())
@@ -238,12 +242,12 @@ impl Evaluator {
     ///
     /// This method returns true or false, which denotes whether the file is ignored or not, only if the path was
     /// matched in `.git/info/exclude`. If not, [`Option::None`] will be returned, denoting that the path was not listed.
-    fn evaluate_git_exclude_file(
+    fn evaluate_local_git_exclude_file(
         &self,
         git_root: &impl AsRef<Path>,
         path: impl AsRef<Path>,
     ) -> Option<bool> {
-        let exclude_file = git_root.as_ref().join(".git").join("info").join("exclude");
+        let exclude_file = git_root.as_ref().join(constant::LOCAL_GIT_CONFIG_PATH);
 
         let gitignore_file = match self.get_or_parse_gitignore(Some(git_root), &exclude_file) {
             Ok(file) => file,
@@ -284,7 +288,7 @@ impl Evaluator {
     ///
     /// This method returns true or false, which denotes whether the file is ignored or not, only if the path was
     /// matched in the global git ignore file. If not, [`Option::None`] will be returned, denoting that the path was not listed.
-    fn evaluate_global_git_excludes_file(
+    fn evaluate_global_git_exclude_file(
         &self,
         git_root: Option<&impl AsRef<Path>>,
         path: impl AsRef<Path>,

@@ -47,7 +47,7 @@ mod tests {
     use temp_env::with_vars;
     use tempfile::TempDir;
 
-    use crate::utils;
+    use crate::{constant, utils};
     use std::{path::PathBuf, process::Command};
 
     #[test_log::test(rstest::rstest)]
@@ -392,12 +392,71 @@ mod tests {
         let mut f = std::fs::File::create(&git_excludes_file).unwrap();
         writeln!(f, "ignored.txt").unwrap();
 
-        let config_path = temp_home.path().join(".config").join("git");
-        std::fs::create_dir_all(&config_path)
+        let config_path = temp_home
+            .path()
+            .join(".config")
+            .join(constant::GLOBAL_GIT_CONFIG_PATH);
+
+        std::fs::create_dir_all(config_path.parent().unwrap())
             .expect("Should always be able to create config path in $HOME");
 
         std::fs::write(
-            config_path.join("config"),
+            config_path,
+            format!(
+                "[core]\n\texcludesfile=/some-invalid-path\n[core]\n\texcludesfile={}",
+                git_excludes_file
+                    .to_str()
+                    .unwrap()
+                    // NB: This is important for Git on Windows. Presumably Git interprets
+                    // the backslashes as escape characters and causes the check ignore command
+                    // to not identify the path as ignored.
+                    .replace(MAIN_SEPARATOR_STR, "/"),
+            ),
+        )
+        .expect("Should always be able to write git config file.");
+
+        with_vars(
+            [
+                ("HOME", Some(temp_home.path())),
+                ("USERPROFILE", Some(temp_home.path())),
+                ("XDG_CONFIG_HOME", None),
+            ],
+            || {
+                Command::new("git")
+                    .arg("init")
+                    .arg(repo_path.as_path())
+                    .output()
+                    .expect("Should be able to initialize git repo");
+
+                let file_path = repo_path.join("ignored.txt");
+
+                let macro_result = is_ignored!(file_path.as_path());
+                let git_result =
+                    crate::utils::git_check_ignore(repo_path.as_path(), file_path.as_path());
+
+                assert!(macro_result);
+                assert!(!is_ignored!(repo_path.join("some_other_file.txt")));
+
+                assert_eq!(
+                    macro_result, git_result,
+                    "Global ignore mismatch for {file_path:?}: macro returned {macro_result}, git returned {git_result}",
+                );
+            },
+        );
+    }
+
+    #[test_log::test(rstest::rstest)]
+    fn test_legacy_global_git_excludes_from_git_config() {
+        let temp_home = TempDir::new().unwrap();
+        let repo_dir = TempDir::new().unwrap();
+        let repo_path = repo_dir.path().join("mock-project");
+
+        let git_excludes_file = temp_home.path().join("custom_global_ignore");
+        let mut f = std::fs::File::create(&git_excludes_file).unwrap();
+        writeln!(f, "ignored.txt").unwrap();
+
+        std::fs::write(
+            temp_home.path().join(".gitconfig"),
             format!(
                 "[core]\n\texcludesfile=/some-invalid-path\n[core]\n\texcludesfile={}",
                 git_excludes_file
