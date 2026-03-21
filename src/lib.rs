@@ -23,7 +23,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! ignored = "0.0.3"
+//! ignored = "0.0.4"
 //! ```
 //!
 //! ### Macro
