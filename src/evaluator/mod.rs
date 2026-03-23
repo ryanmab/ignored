@@ -6,6 +6,8 @@
 mod error;
 mod evaluator;
 mod file;
+mod git_config;
+mod git_root;
 mod glob;
 mod types;
 mod utils;

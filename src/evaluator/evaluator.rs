@@ -2,12 +2,12 @@ use std::{
     collections::{HashMap, hash_map::Entry},
     ffi::OsStr,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, Mutex},
 };
 
 use crate::{
     constant,
-    evaluator::{self, File, types::Result, utils},
+    evaluator::{self, File, git_config, git_root, types::Result, utils},
 };
 
 /// An evaluator for `.gitignore` files in a given directory and its parent directories.
@@ -31,18 +31,15 @@ use crate::{
 /// ```
 #[derive(Debug, Default)]
 pub struct Evaluator {
-    /// A list of previously encountered git roots (directories with a `.git` inside them).
-    ///
-    /// This is an optimisation which allows frequent evaluations in the same/similar directory
-    /// trees to skip traversal of the common ancestor directories, by jumping straight to the
-    /// commonest (already encountered) git root.
-    git_roots: RwLock<Vec<PathBuf>>,
-
     /// A map of previously parsed `.gitignore` files.
     ///
     /// This is an optimisation which allows the evaluator to avoid re-parsing frequently accessed
     /// `.gitignore` files.
     files: Mutex<HashMap<PathBuf, Arc<File>>>,
+
+    config: git_config::ConfigHandler,
+
+    root: git_root::RootHandler,
 }
 
 impl Evaluator {
@@ -113,7 +110,7 @@ impl Evaluator {
     /// matched in at least one `.gitignore` file. If not, [`Option::None`] will be returned,
     /// denoting that no `.gitignore` file matched the path in either direction.
     fn evaluate_gitignore_files(&self, path: impl AsRef<Path>) -> (Option<PathBuf>, Option<bool>) {
-        let mut closest_git_root = self.get_closest_already_encountered_git_root(&path);
+        let mut closest_git_root = self.root.get_closest(&path);
 
         let path_parts = path.as_ref().iter().collect::<Vec<&OsStr>>();
         let closest_git_root_offset = closest_git_root
@@ -126,18 +123,15 @@ impl Evaluator {
         for i in closest_git_root_offset..path_parts.len() {
             let base_path: PathBuf = path_parts[0..i].iter().collect();
 
-            if closest_git_root
-                .as_ref()
-                .is_some_and(|git_root| git_root == &base_path)
+            if self.root.record(&base_path)
+                && closest_git_root
+                    .as_ref()
+                    .is_none_or(|closest| closest != &base_path)
             {
-                // This is the git root we've already identified, no need to add it to the git
-                // roots list.
-            } else if base_path.join(constant::LOCAL_GIT_PATH).exists() {
                 // We've encountered this git root for the first time, we need to update our list of
                 // encountered git roots. We also might already be in a git root (i.e. `.git` in a
                 // subdirectory of another git root), in which case we need to reset our current
                 // ignored decision.
-
                 if is_in_git_root {
                     // We've reached _another_ git root, even though we're already in a git root (i.e.
                     // a repo inside a repo). We should reset our current ignored decision.
@@ -153,23 +147,10 @@ impl Evaluator {
                     log::debug!("Encountered git root at: {}", base_path.as_path().display());
                 }
 
-                match self.git_roots.write() {
-                    Ok(mut guard) => {
-                        guard.push(base_path.clone());
-                    }
-                    Err(e) => {
-                        log::error!(
-                            "Unable to update git roots with newly encountered git root ({}): {}",
-                            base_path.display(),
-                            e
-                        );
-                    }
-                }
-
                 // Update the closest git root as we've now encountered one we previously didn't
                 // know about.
                 closest_git_root = Some(base_path.clone());
-            } else {
+            } else if !is_in_git_root {
                 // We've still not reached a git root (i.e. a `.git` folder). Conforming to git's
                 // semantics this means any `.gitignore` files don't apply.
                 continue;
@@ -247,7 +228,7 @@ impl Evaluator {
         git_root: &impl AsRef<Path>,
         path: impl AsRef<Path>,
     ) -> Option<bool> {
-        let exclude_file = git_root.as_ref().join(constant::LOCAL_GIT_CONFIG_PATH);
+        let exclude_file = self.root.get_exclude_path(git_root)?;
 
         let gitignore_file = match self.get_or_parse_gitignore(Some(git_root), &exclude_file) {
             Ok(file) => file,
@@ -293,7 +274,7 @@ impl Evaluator {
         git_root: Option<&impl AsRef<Path>>,
         path: impl AsRef<Path>,
     ) -> Option<bool> {
-        let exclude_file = utils::get_global_git_exclude_file_path()?;
+        let exclude_file = self.config.get_global_git_exclude_file_path()?;
 
         let gitignore_file = match self.get_or_parse_gitignore(git_root, &exclude_file) {
             Ok(file) => file,
@@ -318,35 +299,6 @@ impl Evaluator {
 
                 return Some(is_ignored);
             }
-        }
-
-        None
-    }
-
-    /// Get the closest already encountered git root which was found in a previous traversal of the
-    /// same directory tree.
-    ///
-    /// This _only_ looks for already encountered git roots, and even when one is returned,
-    /// doesn't guarantee another git root further down the directory tree won't be encountered
-    /// (i.e. a `.git` where there is a `.git` in a parent directory).
-    fn get_closest_already_encountered_git_root(&self, path: impl AsRef<Path>) -> Option<PathBuf> {
-        if let Ok(already_encountered_git_roots) = self.git_roots.read() {
-            return already_encountered_git_roots
-                .iter()
-                .fold(None, |previous_match, git_root| {
-                    if !path.as_ref().starts_with(git_root) {
-                        return previous_match;
-                    }
-
-                    if previous_match
-                        .is_none_or(|previous_match| git_root.as_path().starts_with(previous_match))
-                    {
-                        return Some(git_root);
-                    }
-
-                    previous_match
-                })
-                .map(std::borrow::ToOwned::to_owned);
         }
 
         None
@@ -413,87 +365,5 @@ impl Evaluator {
         drop(guard);
 
         Ok(Some(gitignore_file))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{
-        path::PathBuf,
-        str::FromStr,
-        sync::{Mutex, RwLock},
-    };
-
-    use rstest::rstest;
-
-    use crate::evaluator::Evaluator;
-
-    #[rstest]
-    #[case(
-        vec![],
-        "some/path/",
-        None
-    )]
-    #[case(
-        vec![
-            PathBuf::from_str("some/path/").unwrap()
-        ],
-        "some/path/here/1",
-        Some(PathBuf::from_str("some/path/").unwrap())
-    )]
-    #[case(
-        vec![
-            PathBuf::from_str("some/path/here/").unwrap(),
-            PathBuf::from_str("some/path/").unwrap()
-        ],
-        "some/path/here/1",
-        Some(PathBuf::from_str("some/path/here/").unwrap())
-    )]
-    #[case(
-        vec![
-            PathBuf::from_str("some/path/").unwrap(),
-            PathBuf::from_str("some/path/here/").unwrap()
-        ],
-        "some/path/here/1",
-        Some(PathBuf::from_str("some/path/here/").unwrap())
-    )]
-    #[case(
-        vec![
-            PathBuf::from_str("some/path/").unwrap(),
-            PathBuf::from_str("some/path/here/").unwrap()
-        ],
-        "different/parent/some/path/here/1",
-        None
-    )]
-    #[case(
-        vec![
-            PathBuf::from_str("some/path/").unwrap(),
-            PathBuf::from_str("some/path/here/").unwrap()
-        ],
-        "unrelated/path",
-        None
-    )]
-    #[case(
-        vec![
-            PathBuf::from_str("some/path/").unwrap(),
-            PathBuf::from_str("some/path/here/").unwrap()
-        ],
-        "some/",
-        None
-    )]
-    pub fn test_get_closest_already_encountered_git_root(
-        #[case] git_roots: Vec<PathBuf>,
-        #[case] path: &str,
-        #[case] expected_git_root: Option<PathBuf>,
-    ) {
-        let evaluator = Evaluator {
-            git_roots: RwLock::new(git_roots),
-            files: Mutex::default(),
-        };
-
-        assert_eq!(
-            evaluator.get_closest_already_encountered_git_root(path),
-            expected_git_root
-        );
     }
 }

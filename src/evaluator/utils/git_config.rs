@@ -1,67 +1,60 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs::File,
+    io::{Read, Seek, SeekFrom},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
-use crate::constant;
+use sha2::{Digest, Sha256};
 
-/// Get the global git exclude file path (defined either by default in `$XDG_CONFIG_HOME`/`$HOME`)
-/// or explicitly set using `core.excludesfile` in the git config file.
-pub fn get_global_git_exclude_file_path() -> Option<PathBuf> {
-    // When the `XDG_CONFIG_HOME` environment variable is not set or empty,
-    // `$HOME/.config/` is used as `$XDG_CONFIG_HOME` (handled by xdir).
-    let config_path = xdir::config().map(|p| p.join(constant::GLOBAL_GIT_CONFIG_PATH));
-
-    log::debug!("Git config path defined as: {config_path:?}");
-
-    if let Some(path) = config_path.as_ref() {
-        if let Some(exclude_file) = get_exclude_file_config_from_global_git_config(path) {
-            return Some(exclude_file);
-        }
-    }
-
-    let legacy_config_path = xdir::home().map(|p| p.join(constant::LEGACY_GLOBAL_GIT_CONFIG_PATH));
-
-    log::debug!("Legacy git config path defined as: {legacy_config_path:?}");
-
-    if let Some(path) = legacy_config_path.as_ref() {
-        if let Some(exclude_file) = get_exclude_file_config_from_global_git_config(path) {
-            return Some(exclude_file);
-        }
-    }
-
-    // If `$XDG_CONFIG_HOME` is either not set or empty, `$HOME/.config/git/ignore` is
-    // used instead (handled by xdir).
-    let default = xdir::config().map(|p| p.join(constant::DEFAULT_GLOBAL_GIT_EXCLUDE_PATH));
-
-    log::debug!(
-        "No valid core.excludesfile config found in any git config file. Using default path: {default:?}"
-    );
-
-    default
-}
+use crate::{constant, evaluator::git_config::ConfigFile};
 
 /// Parse a global git config file and extract the `excludesfile` config if present.
 ///
 /// If the path is not present, or the git config file could not be read, [`Option::None`] will be
 /// returned.
-pub fn get_exclude_file_config_from_global_git_config(path: impl AsRef<Path>) -> Option<PathBuf> {
+pub fn read_git_config(
+    path: impl AsRef<Path>,
+    existing_file: Option<Arc<ConfigFile>>,
+) -> Result<Option<Arc<ConfigFile>>, ()> {
     let config_path = path.as_ref();
 
     if !config_path.exists() {
         log::trace!("Config file not found at: {}", config_path.display());
 
-        return None;
+        return Ok(None);
     }
 
-    // TODO: Is it worth producing a checksum and storing the contents of the file (and the
-    // resulting `core.excludesfile` path) in memory to prevent repeated accesses requiring contents
-    // re-matching? The assumption built-in here is that this function will be called infrequently
-    // (i.e. not in a loop and likely not for every evaluation), however that isn't guaranteed.
-    let Ok(contents) = std::fs::read_to_string(config_path) else {
+    let mut file = File::open(config_path).map_err(|_| ())?;
+
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher).map_err(|_| ())?;
+
+    let target_checksum = hasher.finalize();
+
+    if existing_file.as_ref().is_some_and(|existing_file| {
+        existing_file.path.as_path() == path.as_ref()
+            && existing_file.checksum == target_checksum.as_slice()
+    }) {
+        log::trace!(
+            "Already parsed git config file: {}",
+            path.as_ref().display()
+        );
+
+        return Ok(existing_file);
+    }
+
+    file.seek(SeekFrom::Start(0)).map_err(|_| ())?;
+
+    let mut contents = String::new();
+
+    let Ok(_) = file.read_to_string(&mut contents) else {
         log::warn!(
             "Unable to read git config file at: {} ",
             config_path.display()
         );
 
-        return None;
+        return Ok(None);
     };
 
     let path = constant::GLOBAL_GIT_CONFIG_EXCLUDE_PATH_REGEX
@@ -77,316 +70,9 @@ pub fn get_exclude_file_config_from_global_git_config(path: impl AsRef<Path>) ->
         path
     );
 
-    path
-}
-
-#[cfg(test)]
-mod tests {
-    use std::fs;
-    use std::path::{Path, PathBuf};
-    use std::process::Stdio;
-    use temp_env::with_vars;
-    use tempfile::TempDir;
-
-    use crate::constant;
-
-    /// Write a config file with arbitrary contents
-    fn write_git_config(path: &Path, contents: &str) {
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, contents).unwrap();
-    }
-
-    #[test_log::test(rstest::rstest)]
-    #[case(
-        Some("[core]\n\texcludesfile = /home/excludes\n"),
-        None,
-        vec![
-            ("HOME", true),
-            ("USERPROFILE", true),
-            ("XDG_CONFIG_HOME", false),
-        ],
-        Some(PathBuf::from("/home/excludes"))
-    )]
-    #[case(
-        None,
-        Some("[core]\n\texcludesfile = /xdg/excludes\n"),
-        vec![
-            ("HOME", true),
-            ("USERPROFILE", true),
-            ("XDG_CONFIG_HOME", true),
-        ],
-        Some(PathBuf::from("/xdg/excludes"))
-    )]
-    #[case(
-        Some("[core]\n\texcludesfile = /home/excludes\n"),
-        Some("[core]\n\texcludesfile = /xdg/excludes\n"),
-        vec![
-            ("HOME", true),
-            ("USERPROFILE", true),
-            ("XDG_CONFIG_HOME", true),
-        ],
-        Some(PathBuf::from("/xdg/excludes"))
-    )]
-    #[case(
-        Some("[core]\n\texcludesfile = /home/excludes\n"),
-        Some("[core]\n\texcludesfile = /xdg/excludes\n"),
-        vec![
-            ("HOME", true),
-            ("XDG_CONFIG_HOME", true),
-            ("USERPROFILE", false),
-        ],
-        Some(PathBuf::from("/xdg/excludes")) // XDG takes precedence
-    )]
-    #[case(
-        Some("[CORE]\n# comment\n excludesfile   =   \"/home/excludes\"  \n"),
-        Some("[core]\n\texcludesfile=/xdg/excludes\n"),
-        vec![
-            ("HOME", true),
-            ("USERPROFILE", true),
-            ("XDG_CONFIG_HOME", true),
-        ],
-        Some(PathBuf::from("/xdg/excludes")) // XDG still takes precedence
-    )]
-    #[case(
-        None,
-        Some("[core]\n  excludesfile   =   /xdg/excludes   \n"),
-        vec![
-            ("HOME", true),
-            ("USERPROFILE", true),
-            ("XDG_CONFIG_HOME", true),
-        ],
-        Some(PathBuf::from("/xdg/excludes"))
-    )]
-    #[case(
-        Some("[core]\nexcludesfile = /first/path\n[core]\nexcludesfile = \"/second/path\"\n"),
-        None,
-        vec![
-            ("HOME", true),
-            ("USERPROFILE", true),
-            ("XDG_CONFIG_HOME", false),
-        ],
-        Some(PathBuf::from("/second/path"))
-    )]
-    #[case(
-        Some("[core]\n\texcludesfile\t=\t/path/with/spaces\n"),
-        None,
-        vec![
-            ("HOME", true),
-            ("USERPROFILE", true),
-            ("XDG_CONFIG_HOME", false),
-        ],
-        Some(PathBuf::from("/path/with/spaces"))
-    )]
-    fn test_parsing_excludes_file_from_config(
-        #[case] home_contents: Option<&str>,
-        #[case] xdg_contents: Option<&str>,
-        #[case] env_keys: Vec<(&str, bool)>,
-        #[case] expected_exclude: Option<PathBuf>,
-    ) {
-        let temp_home = TempDir::new().unwrap();
-        let temp_xdg = TempDir::new().unwrap();
-
-        let env_vars: Vec<(&str, Option<PathBuf>)> = env_keys
-            .into_iter()
-            .map(|(key, set)| {
-                let path = if set {
-                    match key {
-                        "HOME" | "USERPROFILE" => Some(temp_home.path().to_path_buf()),
-                        "XDG_CONFIG_HOME" => Some(temp_xdg.path().to_path_buf()),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-                (key, path)
-            })
-            .collect();
-
-        if let Some(contents) = home_contents {
-            write_git_config(
-                &temp_home
-                    .path()
-                    .join(".config")
-                    .join(constant::GLOBAL_GIT_CONFIG_PATH),
-                contents,
-            );
-        }
-
-        if let Some(contents) = xdg_contents {
-            write_git_config(
-                &temp_xdg.path().join(constant::GLOBAL_GIT_CONFIG_PATH),
-                contents,
-            );
-        }
-
-        let env_vec: Vec<(&str, Option<&Path>)> = env_vars
-            .iter()
-            .map(|(key, opt_path)| (*key, opt_path.as_ref().map(PathBuf::as_path)))
-            .collect();
-
-        with_vars(env_vec, || {
-            let path = super::get_global_git_exclude_file_path();
-
-            assert_eq!(
-                path, expected_exclude,
-                "{path:?} does not match expected: {expected_exclude:?}"
-            );
-
-            let output = std::process::Command::new("git")
-                .arg("config")
-                .arg("--get")
-                .arg("core.excludesfile")
-                .stdout(Stdio::piped())
-                .output()
-                .expect("failed to run git");
-
-            let git_returned_path = String::from_utf8(output.stdout).ok().and_then(|stdout| {
-                if stdout.is_empty() {
-                    return None;
-                }
-
-                Some(PathBuf::from(stdout.trim_end()))
-            });
-
-            assert_eq!(
-                path, git_returned_path,
-                "{path:?} does not match git cli path: {git_returned_path:?}"
-            );
-        });
-    }
-
-    #[test_log::test(rstest::rstest)]
-    #[case(
-        None,
-        None,
-        vec![
-            ("HOME", false),
-            ("USERPROFILE", false),
-            ("XDG_CONFIG_HOME", false),
-        ],
-    )]
-    #[case(
-        None,
-        None,
-        vec![
-            ("HOME", true),
-            ("USERPROFILE", true),
-            ("XDG_CONFIG_HOME", false),
-        ],
-    )]
-    #[case(
-        None,
-        None,
-        vec![
-            ("HOME", true),
-            ("USERPROFILE", true),
-            ("XDG_CONFIG_HOME", true),
-        ],
-    )]
-    #[case(
-        Some("[CORE]\n# comment\n"),
-        None,
-        vec![
-            ("HOME", true),
-            ("USERPROFILE", true),
-            ("XDG_CONFIG_HOME", false),
-        ],
-    )]
-    #[case(
-        None,
-        Some("[CORE]\n# comment\n"),
-        vec![
-            ("HOME", true),
-            ("USERPROFILE", true),
-            ("XDG_CONFIG_HOME", true),
-        ],
-    )]
-    #[case(
-        Some("[CORE]\n# comment\n"),
-        Some("[CORE]\n# comment\n"),
-        vec![
-            ("HOME", true),
-            ("USERPROFILE", true),
-            ("XDG_CONFIG_HOME", true),
-        ],
-    )]
-    #[case(
-        None,
-        None,
-        vec![
-            ("HOME", false),
-            ("USERPROFILE", false),
-            ("XDG_CONFIG_HOME", true),
-        ],
-    )]
-    fn test_handles_defaults_when_excludes_file_is_not_set_in_config(
-        #[case] home_contents: Option<&str>,
-        #[case] xdg_contents: Option<&str>,
-        #[case] env_keys: Vec<(&str, bool)>,
-    ) {
-        let temp_home = TempDir::new().unwrap();
-        let temp_xdg = TempDir::new().unwrap();
-
-        let env_vars: Vec<(&str, Option<PathBuf>)> = env_keys
-            .into_iter()
-            .map(|(key, set)| {
-                let path = if set {
-                    match key {
-                        "HOME" | "USERPROFILE" => Some(temp_home.path().to_path_buf()),
-                        "XDG_CONFIG_HOME" => Some(temp_xdg.path().to_path_buf()),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-                (key, path)
-            })
-            .collect();
-
-        if let Some(contents) = home_contents {
-            write_git_config(
-                &temp_home
-                    .path()
-                    .join(".config")
-                    .join(constant::GLOBAL_GIT_CONFIG_PATH),
-                contents,
-            );
-        }
-
-        if let Some(contents) = xdg_contents {
-            write_git_config(
-                &temp_xdg.path().join(constant::GLOBAL_GIT_CONFIG_PATH),
-                contents,
-            );
-        }
-
-        let env_vec: Vec<(&str, Option<&Path>)> = env_vars
-            .iter()
-            .map(|(key, opt_path)| (*key, opt_path.as_ref().map(PathBuf::as_path)))
-            .collect();
-
-        with_vars(env_vec, || {
-            let path = super::get_global_git_exclude_file_path();
-
-            assert!(
-                path.as_ref().is_some_and(|s| s.ends_with("git/ignore")),
-                "{path:?} is not the default excludes file path (ending in .config/git/ignore)"
-            );
-
-            let output = std::process::Command::new("git")
-                .arg("config")
-                .arg("--get")
-                .arg("core.excludesfile")
-                .stdout(Stdio::piped())
-                .output()
-                .expect("failed to run git");
-
-            let git_returned_path = String::from_utf8(output.stdout)
-                .ok()
-                .map(|s| s.trim_end().is_empty())
-                .or(Some(true));
-
-            assert_eq!(Some(true), git_returned_path);
-        });
-    }
+    Ok(Some(Arc::new(ConfigFile {
+        path: config_path.to_path_buf(),
+        exclude_file_path: path,
+        checksum: target_checksum.to_vec(),
+    })))
 }

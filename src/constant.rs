@@ -31,4 +31,4 @@ pub static GITIGNORE_FILE: &str = ".gitignore";
 
 /// The path to the local git config file relative to the git repository
 /// root.
-pub static LOCAL_GIT_CONFIG_PATH: &str = ".git/info/exclude";
+pub static LOCAL_GIT_EXCLUDE_PATH: &str = ".git/info/exclude";
