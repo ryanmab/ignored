@@ -8,10 +8,28 @@ use crate::{constant, evaluator::utils};
 
 #[derive(Debug)]
 pub struct ConfigFile {
+    /// The path to the config file.
+    ///
+    /// In priority order, this path will be either:
+    ///
+    /// 1. `$XDG_CONFIG_HOME/git/config`
+    /// 2. `$HOME/.config/git/config`
+    /// 3. `$HOME/.gitconfig`
+    #[allow(dead_code)]
     pub path: PathBuf,
 
+    /// The path to the exclude file defined in the config
+    /// file (if present).
+    ///
+    /// For example:
+    /// ```
+    /// [core]
+    /// excludesfile = "some/path"
+    /// ```
     pub exclude_file_path: Option<PathBuf>,
 
+    /// The checksum of the file content as it was when the [`ConfigFile::exclude_file_path`] path was parsed, used
+    /// for caching purposes.
     pub checksum: Vec<u8>,
 }
 
@@ -24,55 +42,42 @@ impl ConfigHandler {
     /// Get the global git exclude file path (defined either by default in `$XDG_CONFIG_HOME`/`$HOME`)
     /// or explicitly set using `core.excludesfile` in the git config file.
     pub fn get_global_git_exclude_file_path(&self) -> Option<PathBuf> {
-        // When the `XDG_CONFIG_HOME` environment variable is not set or empty,
-        // `$HOME/.config/` is used as `$XDG_CONFIG_HOME` (handled by xdir).
-        let config_path = xdir::config().map(|p| p.join(constant::GLOBAL_GIT_CONFIG_PATH));
+        for config_path in [
+            // When the `XDG_CONFIG_HOME` environment variable is not set or empty,
+            // `$HOME/.config/` is used as `$XDG_CONFIG_HOME` (handled by xdir).
+            xdir::config().map(|p| p.join(constant::GLOBAL_GIT_CONFIG_PATH)),
+            // Legacy `.gitconfig` files are stored in $HOME (`~/.gitconfig`).
+            xdir::home().map(|p| p.join(constant::LEGACY_GLOBAL_GIT_CONFIG_PATH)),
+        ] {
+            log::debug!("Attempting read of git config file potentially in: {config_path:?}");
 
-        log::debug!("Git config path defined as: {config_path:?}");
+            if let Some(path) = config_path.as_ref() {
+                let guard = self.git_config_path.read().ok()?;
 
-        if let Some(path) = config_path.as_ref() {
-            let guard = self.git_config_path.read().ok()?;
+                if let Ok(Some(git_config_file)) =
+                    utils::read_git_config(path, guard.get(path).map(Arc::clone))
+                {
+                    drop(guard);
 
-            if let Ok(Some(git_config_file)) =
-                utils::read_git_config(path, guard.get(path).map(Arc::clone))
-            {
-                drop(guard);
+                    let exclude_file_path = git_config_file
+                        .exclude_file_path
+                        .as_ref()
+                        .map(std::borrow::ToOwned::to_owned);
 
-                let exclude_file_path = &git_config_file.exclude_file_path.clone();
+                    self.git_config_path
+                        .write()
+                        .ok()?
+                        .insert(path.clone(), git_config_file);
 
-                self.git_config_path
-                    .write()
-                    .ok()?
-                    .insert(path.clone(), git_config_file);
+                    if exclude_file_path.is_some() {
+                        // We've found an exclude file in the config, we can return here and
+                        // avoid any further work.
+                        log::debug!(
+                            "Git config file set core.excludesfile as: {exclude_file_path:?}"
+                        );
 
-                if exclude_file_path.is_some() {
-                    return exclude_file_path.clone();
-                }
-            }
-        }
-
-        let legacy_config_path =
-            xdir::home().map(|p| p.join(constant::LEGACY_GLOBAL_GIT_CONFIG_PATH));
-
-        log::debug!("Legacy git config path defined as: {legacy_config_path:?}");
-
-        if let Some(path) = legacy_config_path.as_ref() {
-            let guard = self.git_config_path.read().ok()?;
-
-            if let Ok(Some(git_config_file)) =
-                utils::read_git_config(path, guard.get(path).map(Arc::clone))
-            {
-                drop(guard);
-
-                let exclude_file_path = &git_config_file.exclude_file_path.clone();
-
-                self.git_config_path
-                    .write()
-                    .ok()?
-                    .insert(path.clone(), git_config_file);
-
-                if exclude_file_path.is_some() {
-                    return exclude_file_path.clone();
+                        return exclude_file_path;
+                    }
                 }
             }
         }

@@ -77,7 +77,7 @@ impl Evaluator {
             (git_root, None) => git_root,
         };
 
-        // Patterns read from $GIT_DIR/info/exclude.
+        // Patterns read from `$GIT_DIR/info/exclude`.
         if let Some(ref git_root) = git_root {
             if let Some(is_ignored) = self.evaluate_local_git_exclude_file(git_root, path.as_ref())
             {
@@ -85,7 +85,7 @@ impl Evaluator {
             }
         }
 
-        // Patterns read from the file specified by the configuration variable core.excludesFile.
+        // Patterns read from the file specified by the configuration variable `core.excludesFile`.
         if let Some(is_ignored) =
             self.evaluate_global_git_exclude_file(git_root.as_ref(), path.as_ref())
         {
