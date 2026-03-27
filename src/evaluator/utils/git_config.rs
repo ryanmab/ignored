@@ -7,7 +7,10 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use crate::{constant, evaluator::git_config::ConfigFile};
+use crate::{
+    constant,
+    evaluator::{self, git_config::ConfigFile},
+};
 
 /// Parse a global git config file and extract the `excludesfile` config if present.
 ///
@@ -16,7 +19,7 @@ use crate::{constant, evaluator::git_config::ConfigFile};
 pub fn read_git_config(
     path: impl AsRef<Path>,
     existing_file: Option<Arc<ConfigFile>>,
-) -> Result<Option<Arc<ConfigFile>>, ()> {
+) -> Result<Option<Arc<ConfigFile>>, evaluator::Error> {
     let config_path = path.as_ref();
 
     if !config_path.exists() {
@@ -25,17 +28,23 @@ pub fn read_git_config(
         return Ok(None);
     }
 
-    let mut file = File::open(config_path).map_err(|_| ())?;
+    let mut file = File::open(config_path).map_err(|e| evaluator::Error::FileError {
+        file: config_path.to_path_buf(),
+        source: e,
+    })?;
 
     let mut hasher = Sha256::new();
-    std::io::copy(&mut file, &mut hasher).map_err(|_| ())?;
+    std::io::copy(&mut file, &mut hasher).map_err(|e| evaluator::Error::FileError {
+        file: config_path.to_path_buf(),
+        source: e,
+    })?;
 
     let target_checksum = hasher.finalize();
 
-    if existing_file.as_ref().is_some_and(|existing_file| {
-        existing_file.path.as_path() == path.as_ref()
-            && existing_file.checksum == target_checksum.as_slice()
-    }) {
+    if existing_file
+        .as_ref()
+        .is_some_and(|existing_file| existing_file.checksum == target_checksum.as_slice())
+    {
         log::trace!(
             "Already parsed git config file: {}",
             path.as_ref().display()
@@ -44,18 +53,20 @@ pub fn read_git_config(
         return Ok(existing_file);
     }
 
-    file.seek(SeekFrom::Start(0)).map_err(|_| ())?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|e| evaluator::Error::FileError {
+            file: config_path.to_path_buf(),
+            source: e,
+        })?;
 
     let mut contents = String::new();
 
-    let Ok(_) = file.read_to_string(&mut contents) else {
-        log::warn!(
-            "Unable to read git config file at: {} ",
-            config_path.display()
-        );
-
-        return Ok(None);
-    };
+    if let Err(e) = file.read_to_string(&mut contents) {
+        return Err(evaluator::Error::FileError {
+            file: config_path.to_path_buf(),
+            source: e,
+        });
+    }
 
     let path = constant::GLOBAL_GIT_CONFIG_EXCLUDE_PATH_REGEX
         .captures_iter(&contents)
