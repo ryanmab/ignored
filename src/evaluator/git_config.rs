@@ -22,7 +22,8 @@ pub struct ConfigFile {
     /// file (if present).
     ///
     /// For example:
-    /// ```
+    ///
+    /// ```toml
     /// [core]
     /// excludesfile = "some/path"
     /// ```
