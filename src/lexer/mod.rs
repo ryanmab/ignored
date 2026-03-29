@@ -345,6 +345,12 @@ mod tests {
             Token::ImplicitLiteral(vec![b' ', b' ', b' '])
         ])),
     )]
+    #[case(
+        r"fileé.txt",
+        Ok(TokenStream(vec![
+            Token::ImplicitLiteral(vec![b'f', b'i', b'l', b'e', 0xc3, 0xa9, b'.', b't', b'x', b't'])
+        ])),
+    )]
     pub fn test_lexing(#[case] pattern: &str, #[case] expected_output: Result<TokenStream>) {
         let output = super::analyse(pattern);
 
