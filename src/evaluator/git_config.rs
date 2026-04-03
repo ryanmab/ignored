@@ -1,6 +1,9 @@
 use std::{collections::HashMap, path::PathBuf, sync::RwLock};
 
-use crate::{constant, evaluator::utils};
+use crate::{
+    constant,
+    evaluator::{self, utils},
+};
 
 #[derive(Debug)]
 pub struct ConfigFile {
@@ -38,7 +41,7 @@ pub struct ConfigHandler {
 impl ConfigHandler {
     /// Get the global git exclude file path (defined either by default in `$XDG_CONFIG_HOME`/`$HOME`)
     /// or explicitly set using `core.excludesfile` in the git config file.
-    pub fn get_global_git_exclude_file_path(&self) -> Option<PathBuf> {
+    pub fn get_global_git_exclude_file_path(&self) -> evaluator::Result<Option<PathBuf>> {
         for config_path in [
             // When the `XDG_CONFIG_HOME` environment variable is not set or empty,
             // `$HOME/.config/` is used as `$XDG_CONFIG_HOME` (handled by xdir).
@@ -49,38 +52,45 @@ impl ConfigHandler {
             log::debug!("Attempting read of git config file potentially in: {config_path:?}");
 
             if let Some(path) = config_path.as_ref() {
-                let guard = self.git_config_paths.read().ok()?;
+                let guard = self
+                    .git_config_paths
+                    .read()
+                    .map_err(|_| evaluator::Error::CachePoisoned(path.clone()))?;
 
                 let config_file = guard.get(path);
 
-                let is_matching_checksum = config_file.is_some_and(|config_file| {
-                    match crate::utils::compute_checksum(path) {
-                        Ok((target_checksum, _)) => target_checksum == config_file.checksum,
-                        Err(e) => {
-                            // We failed to compute the checksum, so we must assume the file has changed
-                            // and needs to be re-read.
-                            log::debug!("Failed to compute checksum for git config file at path: {path:?}. Will attempt to re-read the file. Error: {e:?}");
-                            false
-                        }
+                let (target_checksum, file) = match crate::utils::compute_checksum(path) {
+                    Ok((checksum, file)) => (checksum, file),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        // If the file doesn't exist, we can just continue to the next path without error.
+                        continue;
                     }
-                });
-
-                if let Some(config_file) = config_file {
-                    if is_matching_checksum {
-                        // We've found an exclude file in the config, we can return here and
-                        // avoid any further work.
-                        log::debug!(
-                            "Using existing cached core.excludesfile set as: {:?}",
-                            config_file.exclude_file_path
-                        );
-
-                        return config_file.exclude_file_path.clone();
+                    Err(e) => {
+                        // We couldn't read the file to compute the hash, so we can't move on from
+                        // here.
+                        return Err(evaluator::Error::FileError {
+                            file: path.clone(),
+                            source: e,
+                        });
                     }
+                };
+
+                if config_file.is_some_and(|config_file| target_checksum == config_file.checksum) {
+                    let config_file = config_file.expect("Git config file cannot ever have a matching checksum when the config file is not present.");
+
+                    // We've found an exclude file in the config, we can return here and
+                    // avoid any further work.
+                    log::debug!(
+                        "Using existing cached core.excludesfile set as: {:?}",
+                        config_file.exclude_file_path
+                    );
+
+                    return Ok(config_file.exclude_file_path.clone());
                 }
 
-                if let Ok(config_file) = utils::read_git_config(path) {
-                    drop(guard);
+                drop(guard);
 
+                if let Ok(config_file) = utils::read_git_config(path, file, &target_checksum) {
                     let exclude_file_path = config_file
                         .exclude_file_path
                         .as_ref()
@@ -88,7 +98,7 @@ impl ConfigHandler {
 
                     self.git_config_paths
                         .write()
-                        .ok()?
+                        .map_err(|_| evaluator::Error::CachePoisoned(path.clone()))?
                         .insert(path.clone(), config_file);
 
                     if exclude_file_path.is_some() {
@@ -98,7 +108,7 @@ impl ConfigHandler {
                             "Git config file set core.excludesfile as: {exclude_file_path:?}"
                         );
 
-                        return exclude_file_path;
+                        return Ok(exclude_file_path);
                     }
                 }
             }
@@ -112,7 +122,7 @@ impl ConfigHandler {
             "No valid core.excludesfile config found in any git config file. Using default path: {default:?}"
         );
 
-        default
+        Ok(default)
     }
 }
 
@@ -265,7 +275,9 @@ mod tests {
 
         with_vars(env_vec, || {
             let config_handler = ConfigHandler::default();
-            let path = config_handler.get_global_git_exclude_file_path();
+            let path = config_handler
+                .get_global_git_exclude_file_path()
+                .expect("Should be able to get global git exclude file path");
 
             assert_eq!(
                 path, expected_exclude,
@@ -410,7 +422,10 @@ mod tests {
             let path = config_handler.get_global_git_exclude_file_path();
 
             assert!(
-                path.as_ref().is_some_and(|s| s.ends_with("git/ignore")),
+                path.as_ref()
+                    .expect("reading file should succeed")
+                    .as_ref()
+                    .is_some_and(|s| s.ends_with("git/ignore")),
                 "{path:?} is not the default excludes file path (ending in .config/git/ignore)"
             );
 
@@ -463,8 +478,10 @@ mod tests {
             // and not re-read the config file from disk, which would have returned a different exclude
             // file path.
             assert_eq!(
-                config_handler.get_global_git_exclude_file_path(),
-                "/some/path/not/read/from/disk".parse::<PathBuf>().ok()
+                config_handler
+                    .get_global_git_exclude_file_path()
+                    .expect("Should be able to get global git exclude file path"),
+                Some(PathBuf::from("/some/path/not/read/from/disk"))
             );
         });
     }

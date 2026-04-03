@@ -1,4 +1,5 @@
 use std::{
+    fs,
     io::Read,
     path::{Path, PathBuf},
 };
@@ -12,14 +13,12 @@ use crate::{
 ///
 /// If the path is not present, or the git config file could not be read, [`Option::None`] will be
 /// returned.
-pub fn read_git_config(path: impl AsRef<Path>) -> Result<ConfigFile, evaluator::Error> {
+pub fn read_git_config(
+    path: impl AsRef<Path>,
+    mut file: fs::File,
+    checksum: &[u8],
+) -> Result<ConfigFile, evaluator::Error> {
     let config_path = path.as_ref();
-
-    let (target_checksum, mut file) =
-        crate::utils::compute_checksum(config_path).map_err(|e| evaluator::Error::FileError {
-            file: config_path.to_path_buf(),
-            source: e,
-        })?;
 
     let mut contents = String::new();
 
@@ -46,7 +45,7 @@ pub fn read_git_config(path: impl AsRef<Path>) -> Result<ConfigFile, evaluator::
     Ok(ConfigFile {
         path: config_path.to_path_buf(),
         exclude_file_path: path,
-        checksum: target_checksum,
+        checksum: checksum.to_vec(),
     })
 }
 
@@ -54,7 +53,7 @@ pub fn read_git_config(path: impl AsRef<Path>) -> Result<ConfigFile, evaluator::
 mod tests {
     use super::*;
     use rstest::rstest;
-    use std::fs::{self, File};
+    use std::fs::File;
     use std::io::Write;
     use std::path::Path;
     use tempfile::tempdir;
@@ -65,16 +64,6 @@ mod tests {
     fn write_file(path: &Path, contents: &str) {
         let mut file = File::create(path).unwrap();
         file.write_all(contents.as_bytes()).unwrap();
-    }
-
-    #[test]
-    fn returns_none_if_file_does_not_exist() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("nonexistent");
-
-        let result = read_git_config(&path);
-
-        assert!(result.is_err());
     }
 
     #[rstest]
@@ -89,7 +78,12 @@ mod tests {
         let contents = template.replace("{path}", &exclude_path.to_string_lossy());
         write_file(&config_path, &contents);
 
-        let result = read_git_config(&config_path).unwrap();
+        let result = read_git_config(
+            &config_path,
+            File::open(&config_path).expect("should always be able to read mock git config file"),
+            &[],
+        )
+        .unwrap();
 
         assert_eq!(result.exclude_file_path.is_some(), has_path);
 
@@ -122,22 +116,14 @@ mod tests {
 
         write_file(&config_path, &contents);
 
-        let result = read_git_config(&config_path).unwrap();
+        let result = read_git_config(
+            &config_path,
+            File::open(&config_path).expect("should always be able to read mock git config file"),
+            &[],
+        )
+        .unwrap();
 
         assert_eq!(result.exclude_file_path.as_deref(), Some(second.as_path()));
-    }
-
-    #[test]
-    fn returns_error_if_path_is_not_a_file() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("not_a_file");
-
-        // Create directory instead of file
-        fs::create_dir(&path).unwrap();
-
-        let result = read_git_config(&path);
-
-        assert!(result.is_err());
     }
 
     #[rstest]
@@ -155,7 +141,12 @@ mod tests {
 
         write_file(&config_path, &contents);
 
-        let result = read_git_config(&config_path).unwrap();
+        let result = read_git_config(
+            &config_path,
+            File::open(&config_path).expect("should always be able to read mock git config file"),
+            &[],
+        )
+        .unwrap();
 
         assert_eq!(result.exclude_file_path.as_deref(), Some(exclude.as_path()));
     }
@@ -195,7 +186,11 @@ mod tests {
 
             write_file(&config_path, &contents);
 
-            let result = read_git_config(&config_path);
+            let result = read_git_config(
+                &config_path,
+                File::open(&config_path).expect("should always be able to read mock git config file"),
+                &[],
+            );
 
             // Should never panic or error for valid UTF-8 input
             prop_assert!(result.is_ok());
@@ -232,7 +227,11 @@ mod tests {
 
             write_file(&config_path, &contents);
 
-            let result = read_git_config(&config_path).unwrap();
+            let result = read_git_config(
+                &config_path,
+                File::open(&config_path).expect("should always be able to read mock git config file"),
+                &[],
+            ).unwrap();
 
             let expected = PathBuf::from(paths.last().unwrap());
 
@@ -262,7 +261,12 @@ mod tests {
 
         write_file(&config_path, contents);
 
-        let result = read_git_config(&config_path).unwrap();
+        let result = read_git_config(
+            &config_path,
+            File::open(&config_path).expect("should always be able to read mock git config file"),
+            &[],
+        )
+        .unwrap();
 
         assert_eq!(
             result.exclude_file_path.as_deref(),
@@ -284,7 +288,12 @@ mod tests {
 
         write_file(&config_path, contents);
 
-        let result = read_git_config(&config_path).unwrap();
+        let result = read_git_config(
+            &config_path,
+            File::open(&config_path).expect("should always be able to read mock git config file"),
+            &[],
+        )
+        .unwrap();
 
         assert_eq!(
             result.exclude_file_path.as_deref(),
@@ -317,7 +326,12 @@ mod tests {
 
         write_file(&config_path, contents);
 
-        let result = read_git_config(&config_path).unwrap();
+        let result = read_git_config(
+            &config_path,
+            File::open(&config_path).expect("should always be able to read mock git config file"),
+            &[],
+        )
+        .unwrap();
 
         assert_eq!(
             result.exclude_file_path.as_deref(),
@@ -344,7 +358,12 @@ mod tests {
 
         write_file(&config_path, &contents);
 
-        let result = read_git_config(&config_path).unwrap();
+        let result = read_git_config(
+            &config_path,
+            File::open(&config_path).expect("should always be able to read mock git config file"),
+            &[],
+        )
+        .unwrap();
 
         assert_eq!(
             result.exclude_file_path.as_deref(),
