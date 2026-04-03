@@ -1,8 +1,4 @@
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-    sync::{Arc, RwLock},
-};
+use std::{collections::HashMap, path::PathBuf, sync::RwLock};
 
 use crate::{constant, evaluator::utils};
 
@@ -36,7 +32,7 @@ pub struct ConfigFile {
 
 #[derive(Debug, Default)]
 pub struct ConfigHandler {
-    git_config_path: RwLock<HashMap<PathBuf, Arc<ConfigFile>>>,
+    git_config_paths: RwLock<HashMap<PathBuf, ConfigFile>>,
 }
 
 impl ConfigHandler {
@@ -53,22 +49,47 @@ impl ConfigHandler {
             log::debug!("Attempting read of git config file potentially in: {config_path:?}");
 
             if let Some(path) = config_path.as_ref() {
-                let guard = self.git_config_path.read().ok()?;
+                let guard = self.git_config_paths.read().ok()?;
 
-                if let Ok(Some(git_config_file)) =
-                    utils::read_git_config(path, guard.get(path).map(Arc::clone))
-                {
+                let config_file = guard.get(path);
+
+                let is_matching_checksum = config_file.is_some_and(|config_file| {
+                    match crate::utils::compute_checksum(path) {
+                        Ok((target_checksum, _)) => target_checksum == config_file.checksum,
+                        Err(e) => {
+                            // We failed to compute the checksum, so we must assume the file has changed
+                            // and needs to be re-read.
+                            log::debug!("Failed to compute checksum for git config file at path: {path:?}. Will attempt to re-read the file. Error: {e:?}");
+                            false
+                        }
+                    }
+                });
+
+                if let Some(config_file) = config_file {
+                    if is_matching_checksum {
+                        // We've found an exclude file in the config, we can return here and
+                        // avoid any further work.
+                        log::debug!(
+                            "Using existing cached core.excludesfile set as: {:?}",
+                            config_file.exclude_file_path
+                        );
+
+                        return config_file.exclude_file_path.clone();
+                    }
+                }
+
+                if let Ok(config_file) = utils::read_git_config(path) {
                     drop(guard);
 
-                    let exclude_file_path = git_config_file
+                    let exclude_file_path = config_file
                         .exclude_file_path
                         .as_ref()
                         .map(std::borrow::ToOwned::to_owned);
 
-                    self.git_config_path
+                    self.git_config_paths
                         .write()
                         .ok()?
-                        .insert(path.clone(), git_config_file);
+                        .insert(path.clone(), config_file);
 
                     if exclude_file_path.is_some() {
                         // We've found an exclude file in the config, we can return here and
@@ -99,13 +120,14 @@ impl ConfigHandler {
 mod tests {
     use std::fs;
     use std::process::Stdio;
+    use std::sync::RwLock;
     use std::{path::Path, path::PathBuf};
     use temp_env::with_vars;
     use tempfile::TempDir;
 
     use crate::constant;
 
-    use crate::evaluator::git_config::ConfigHandler;
+    use crate::evaluator::git_config::{ConfigFile, ConfigHandler};
 
     /// Write a config file with arbitrary contents
     fn write_git_config(path: &Path, contents: &str) {
@@ -406,6 +428,44 @@ mod tests {
                 .or(Some(true));
 
             assert_eq!(Some(true), git_returned_path);
+        });
+    }
+
+    #[test_log::test(rstest::rstest)]
+    fn test_doesnt_reparse_config_on_repeated_calls() {
+        let temp_xdg = TempDir::new().unwrap();
+
+        write_git_config(
+            &temp_xdg.path().join(constant::GLOBAL_GIT_CONFIG_PATH),
+            "[core]\n\texcludesfile = /some/path/read/from/disk\n",
+        );
+
+        with_vars([("XDG_CONFIG_HOME", Some(temp_xdg.path()))], || {
+            let config_path = temp_xdg.path().join(constant::GLOBAL_GIT_CONFIG_PATH);
+
+            let config_handler = ConfigHandler {
+                git_config_paths: RwLock::new(
+                    [(
+                        config_path.clone(),
+                        ConfigFile {
+                            path: config_path.clone(),
+                            exclude_file_path: Some(PathBuf::from("/some/path/not/read/from/disk")),
+                            checksum: crate::utils::compute_checksum(&config_path)
+                                .map(|(checksum, _)| checksum)
+                                .expect("Should be able to compute checksum for config file"),
+                        },
+                    )]
+                    .into(),
+                ),
+            };
+
+            // Since the checksum matches, the config handler should return the cached exclude file path
+            // and not re-read the config file from disk, which would have returned a different exclude
+            // file path.
+            assert_eq!(
+                config_handler.get_global_git_exclude_file_path(),
+                "/some/path/not/read/from/disk".parse::<PathBuf>().ok()
+            );
         });
     }
 }

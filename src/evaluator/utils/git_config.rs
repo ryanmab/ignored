@@ -1,11 +1,7 @@
 use std::{
-    fs::File,
-    io::{Read, Seek, SeekFrom},
+    io::Read,
     path::{Path, PathBuf},
-    sync::Arc,
 };
-
-use sha2::{Digest, Sha256};
 
 use crate::{
     constant,
@@ -16,45 +12,11 @@ use crate::{
 ///
 /// If the path is not present, or the git config file could not be read, [`Option::None`] will be
 /// returned.
-pub fn read_git_config(
-    path: impl AsRef<Path>,
-    existing_file: Option<Arc<ConfigFile>>,
-) -> Result<Option<Arc<ConfigFile>>, evaluator::Error> {
+pub fn read_git_config(path: impl AsRef<Path>) -> Result<ConfigFile, evaluator::Error> {
     let config_path = path.as_ref();
 
-    if !config_path.exists() {
-        log::trace!("Config file not found at: {}", config_path.display());
-
-        return Ok(None);
-    }
-
-    let mut file = File::open(config_path).map_err(|e| evaluator::Error::FileError {
-        file: config_path.to_path_buf(),
-        source: e,
-    })?;
-
-    let mut hasher = Sha256::new();
-    std::io::copy(&mut file, &mut hasher).map_err(|e| evaluator::Error::FileError {
-        file: config_path.to_path_buf(),
-        source: e,
-    })?;
-
-    let target_checksum = hasher.finalize();
-
-    if existing_file
-        .as_ref()
-        .is_some_and(|existing_file| existing_file.checksum == target_checksum.as_slice())
-    {
-        log::trace!(
-            "Already parsed git config file: {}",
-            path.as_ref().display()
-        );
-
-        return Ok(existing_file);
-    }
-
-    file.seek(SeekFrom::Start(0))
-        .map_err(|e| evaluator::Error::FileError {
+    let (target_checksum, mut file) =
+        crate::utils::compute_checksum(config_path).map_err(|e| evaluator::Error::FileError {
             file: config_path.to_path_buf(),
             source: e,
         })?;
@@ -81,11 +43,11 @@ pub fn read_git_config(
         path
     );
 
-    Ok(Some(Arc::new(ConfigFile {
+    Ok(ConfigFile {
         path: config_path.to_path_buf(),
         exclude_file_path: path,
-        checksum: target_checksum.to_vec(),
-    })))
+        checksum: target_checksum,
+    })
 }
 
 #[cfg(test)]
@@ -95,8 +57,6 @@ mod tests {
     use std::fs::{self, File};
     use std::io::Write;
     use std::path::Path;
-    use std::sync::Arc;
-    use temp_env::with_vars;
     use tempfile::tempdir;
 
     use proptest::prelude::*;
@@ -112,9 +72,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("nonexistent");
 
-        let result = read_git_config(&path, None).unwrap();
+        let result = read_git_config(&path);
 
-        assert!(result.is_none());
+        assert!(result.is_err());
     }
 
     #[rstest]
@@ -129,7 +89,7 @@ mod tests {
         let contents = template.replace("{path}", &exclude_path.to_string_lossy());
         write_file(&config_path, &contents);
 
-        let result = read_git_config(&config_path, None).unwrap().unwrap();
+        let result = read_git_config(&config_path).unwrap();
 
         assert_eq!(result.exclude_file_path.is_some(), has_path);
 
@@ -162,57 +122,9 @@ mod tests {
 
         write_file(&config_path, &contents);
 
-        let result = read_git_config(&config_path, None).unwrap().unwrap();
+        let result = read_git_config(&config_path).unwrap();
 
         assert_eq!(result.exclude_file_path.as_deref(), Some(second.as_path()));
-    }
-
-    #[test]
-    fn reuses_existing_file_if_checksum_matches() {
-        let dir = tempdir().unwrap();
-        let config_path = dir.path().join("config");
-
-        let exclude = dir.path().join("ignore");
-
-        write_file(
-            &config_path,
-            &format!("[core]\n\texcludesfile = {}\n", exclude.display()),
-        );
-
-        let first = read_git_config(&config_path, None).unwrap().unwrap();
-        let second = read_git_config(&config_path, Some(first.clone()))
-            .unwrap()
-            .unwrap();
-
-        assert!(Arc::ptr_eq(&first, &second));
-    }
-
-    #[test]
-    fn reparses_if_checksum_differs() {
-        let dir = tempdir().unwrap();
-        let config_path = dir.path().join("config");
-
-        let foo = dir.path().join("foo");
-        let bar = dir.path().join("bar");
-
-        write_file(
-            &config_path,
-            &format!("[core]\n\texcludesfile = {}\n", foo.display()),
-        );
-
-        let first = read_git_config(&config_path, None).unwrap().unwrap();
-
-        write_file(
-            &config_path,
-            &format!("[core]\n\texcludesfile = {}\n", bar.display()),
-        );
-
-        let second = read_git_config(&config_path, Some(first.clone()))
-            .unwrap()
-            .unwrap();
-
-        assert!(!Arc::ptr_eq(&first, &second));
-        assert_eq!(second.exclude_file_path.as_deref(), Some(bar.as_path()));
     }
 
     #[test]
@@ -223,32 +135,9 @@ mod tests {
         // Create directory instead of file
         fs::create_dir(&path).unwrap();
 
-        let result = read_git_config(&path, None);
+        let result = read_git_config(&path);
 
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn works_with_temp_env_vars() {
-        let dir = tempdir().unwrap();
-        let config_path = dir.path().join("config");
-        let exclude = dir.path().join("ignore");
-
-        write_file(
-            &config_path,
-            &format!("[core]\n\texcludesfile = {}\n", exclude.display()),
-        );
-
-        with_vars(
-            vec![
-                ("HOME", Some("fake_home")),
-                ("XDG_CONFIG_HOME", Some("fake_xdg")),
-            ],
-            || {
-                let result = read_git_config(&config_path, None).unwrap().unwrap();
-                assert!(result.exclude_file_path.is_some());
-            },
-        );
     }
 
     #[rstest]
@@ -266,7 +155,7 @@ mod tests {
 
         write_file(&config_path, &contents);
 
-        let result = read_git_config(&config_path, None).unwrap().unwrap();
+        let result = read_git_config(&config_path).unwrap();
 
         assert_eq!(result.exclude_file_path.as_deref(), Some(exclude.as_path()));
     }
@@ -306,12 +195,12 @@ mod tests {
 
             write_file(&config_path, &contents);
 
-            let result = read_git_config(&config_path, None);
+            let result = read_git_config(&config_path);
 
             // Should never panic or error for valid UTF-8 input
             prop_assert!(result.is_ok());
 
-            let parsed = result.unwrap().unwrap();
+            let parsed = result.unwrap();
 
             match expected_path {
                 Some(ref expected) => {
@@ -343,7 +232,7 @@ mod tests {
 
             write_file(&config_path, &contents);
 
-            let result = read_git_config(&config_path, None).unwrap().unwrap();
+            let result = read_git_config(&config_path).unwrap();
 
             let expected = PathBuf::from(paths.last().unwrap());
 
@@ -373,7 +262,7 @@ mod tests {
 
         write_file(&config_path, contents);
 
-        let result = read_git_config(&config_path, None).unwrap().unwrap();
+        let result = read_git_config(&config_path).unwrap();
 
         assert_eq!(
             result.exclude_file_path.as_deref(),
@@ -395,7 +284,7 @@ mod tests {
 
         write_file(&config_path, contents);
 
-        let result = read_git_config(&config_path, None).unwrap().unwrap();
+        let result = read_git_config(&config_path).unwrap();
 
         assert_eq!(
             result.exclude_file_path.as_deref(),
@@ -428,7 +317,7 @@ mod tests {
 
         write_file(&config_path, contents);
 
-        let result = read_git_config(&config_path, None).unwrap().unwrap();
+        let result = read_git_config(&config_path).unwrap();
 
         assert_eq!(
             result.exclude_file_path.as_deref(),
@@ -455,7 +344,7 @@ mod tests {
 
         write_file(&config_path, &contents);
 
-        let result = read_git_config(&config_path, None).unwrap().unwrap();
+        let result = read_git_config(&config_path).unwrap();
 
         assert_eq!(
             result.exclude_file_path.as_deref(),
