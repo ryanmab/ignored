@@ -274,14 +274,16 @@ impl Evaluator {
         git_root: Option<&impl AsRef<Path>>,
         path: impl AsRef<Path>,
     ) -> Option<bool> {
-        let exclude_file = self.config.get_global_git_exclude_file_path()?;
+        let Ok(exclude_file) = self.config.get_global_git_exclude_file_path() else {
+            return None;
+        };
 
-        let gitignore_file = match self.get_or_parse_gitignore(git_root, &exclude_file) {
+        let gitignore_file = match self.get_or_parse_gitignore(git_root, exclude_file.as_ref()?) {
             Ok(file) => file,
             Err(e) => {
                 log::error!(
-                    "Failed to read global .gitignore file at {}: {:?}",
-                    exclude_file.display(),
+                    "Failed to read global .gitignore file at {:?}: {:?}",
+                    exclude_file,
                     e
                 );
 
@@ -292,9 +294,9 @@ impl Evaluator {
         if let Some(gitignore_file) = gitignore_file {
             if let Some(is_ignored) = gitignore_file.is_ignored(&path) {
                 log::debug!(
-                    "{} is ignored by {}: {is_ignored}",
+                    "{} is ignored by {:?}: {is_ignored}",
                     path.as_ref().display(),
-                    exclude_file.as_path().display()
+                    exclude_file
                 );
 
                 return Some(is_ignored);
@@ -328,10 +330,10 @@ impl Evaluator {
 
         let gitignore_file = match guard.entry(potential_gitignore.as_ref().to_path_buf()) {
             Entry::Occupied(mut e) => {
-                {
+                let (checksum, file) = {
                     let existing_file = e.get_mut();
 
-                    let (target_checksum, _) = crate::utils::compute_checksum(
+                    let (target_checksum, file_handle) = crate::utils::compute_checksum(
                         potential_gitignore.as_ref(),
                     )
                     .map_err(|e| evaluator::Error::FileError {
@@ -342,19 +344,33 @@ impl Evaluator {
                     if existing_file.checksum == target_checksum {
                         return Ok(Some(Arc::clone(existing_file)));
                     }
-                }
+
+                    (target_checksum, file_handle)
+                };
 
                 // We've parsed this file before but the content has changed. We need to re-parse
                 // it from scratch
                 Arc::clone(&e.insert(Arc::new(utils::read_gitignore(
                     base_path.as_ref(),
                     potential_gitignore.as_ref(),
+                    file,
+                    &checksum,
                 )?)))
             }
             Entry::Vacant(e) => {
+                let (target_checksum, file_handle) =
+                    crate::utils::compute_checksum(potential_gitignore.as_ref()).map_err(|e| {
+                        evaluator::Error::FileError {
+                            file: potential_gitignore.as_ref().to_path_buf(),
+                            source: e,
+                        }
+                    })?;
+
                 let gitignore_file = Arc::new(utils::read_gitignore(
                     base_path.as_ref(),
                     potential_gitignore.as_ref(),
+                    file_handle,
+                    &target_checksum,
                 )?);
 
                 // We've never encountered this file before, we need to parse it

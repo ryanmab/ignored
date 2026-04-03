@@ -30,9 +30,10 @@ pub enum Error {
         /// The underlying error from the regex compiler.
         source: regex::Error,
     },
-    /// An error occurred while trying to read a `.gitignore` file because the file cache which
+
+    /// An error occurred while trying to read a git config or `.gitignore` file, because the file cache which
     /// stores the contents of previously read files is poisoned.
-    #[error("Unable to read gitignore file, as the underlying file cache is poisoned: {0}")]
+    #[error("Unable to read and store file, as the underlying file cache is poisoned: {0}")]
     CachePoisoned(PathBuf),
 
     /// An error occurred while trying to read a `.gitignore` file.

@@ -1,12 +1,10 @@
 use std::{
+    fs,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
 };
 
-use crate::{
-    evaluator::{self, File, Glob, Result},
-    utils,
-};
+use crate::evaluator::{File, Glob, Result};
 
 /// Read a `.gitignore` file at the given path and parse it into a [`crate::evaluator::File`] struct.
 ///
@@ -20,6 +18,8 @@ use crate::{
 pub fn read_gitignore(
     base_path: Option<impl AsRef<Path>>,
     gitignore_path: impl AsRef<Path>,
+    file: fs::File,
+    checksum: &[u8],
 ) -> Result<File> {
     let base_path = base_path.map_or_else(
         || {
@@ -30,13 +30,6 @@ pub fn read_gitignore(
         },
         |base_path| base_path.as_ref().to_path_buf(),
     );
-
-    let (checksum, file) = utils::compute_checksum(gitignore_path.as_ref()).map_err(|e| {
-        evaluator::Error::FileError {
-            file: gitignore_path.as_ref().to_path_buf(),
-            source: e,
-        }
-    })?;
 
     let reader = BufReader::new(file);
     let mut content = Vec::<Glob>::new();
@@ -53,5 +46,5 @@ pub fn read_gitignore(
         content.push(glob);
     }
 
-    Ok(File::new(base_path, content, checksum))
+    Ok(File::new(base_path, content, checksum.to_vec()))
 }
