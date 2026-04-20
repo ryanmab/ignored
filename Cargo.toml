@@ -28,7 +28,7 @@ fastrand = "2.4.1"
 proptest = { version = "1.11.0", features = ["proptest-macro"] }
 rstest = "0.26.1"
 tempfile = "3.27.0"
-test-log = "0.2.19"
+test-log = "0.2.20"
 temp-env = "0.3.6"
 
 [profile.release]
