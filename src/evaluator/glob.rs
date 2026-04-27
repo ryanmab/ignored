@@ -263,8 +263,6 @@ impl TryFrom<TokenStream> for Glob {
         }
 
         if !is_directory_only {
-            regex.push_str(r"(?:$|[\\/])");
-        } else {
             // If there is a separator at the end of the pattern then the pattern will
             // only match directories, otherwise the pattern can match both files and
             // directories.
@@ -272,7 +270,7 @@ impl TryFrom<TokenStream> for Glob {
             // For example, a pattern `doc/frotz/` matches `doc/frotz` directory, but not
             // `a/doc/frotz` directory; however `frotz/` matches `frotz` and `a/frotz` that
             // is a directory (all paths are relative from the `.gitignore` file).
-            regex.push_str(r"[\\/]");
+            regex.push_str(r"(?:$|[\\/])");
         }
 
         let regex = regex::bytes::RegexBuilder::new(regex.as_str())
