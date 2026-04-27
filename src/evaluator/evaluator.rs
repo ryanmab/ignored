@@ -281,11 +281,7 @@ impl Evaluator {
         let gitignore_file = match self.get_or_parse_gitignore(git_root, exclude_file.as_ref()?) {
             Ok(file) => file,
             Err(e) => {
-                log::error!(
-                    "Failed to read global .gitignore file at {:?}: {:?}",
-                    exclude_file,
-                    e
-                );
+                log::error!("Failed to read global .gitignore file at {exclude_file:?}: {e:?}");
 
                 None
             }
