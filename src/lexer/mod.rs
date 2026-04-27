@@ -336,6 +336,13 @@ mod tests {
         ])),
     )]
     #[case(
+        r"foo \ ",
+        Ok(TokenStream(vec![
+            Token::ImplicitLiteral(vec![b'f', b'o', b'o', b' ']),
+            Token::ExplicitLiteral(vec![b' ']),
+        ])),
+    )]
+    #[case(
         r"",
         Ok(TokenStream(vec![])),
     )]
