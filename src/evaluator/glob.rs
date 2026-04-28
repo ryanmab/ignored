@@ -374,8 +374,9 @@ impl TryFrom<&str> for Glob {
 
 #[cfg(test)]
 mod tests {
+    use insta::assert_snapshot;
     use proptest::prelude::*;
-    use rstest::rstest;
+    use rstest::{Context, rstest};
 
     use crate::utils;
 
@@ -387,6 +388,53 @@ mod tests {
             .expect("Should never fail to build glob from empty or comment pattern");
 
         assert!(output.is_empty());
+    }
+
+    #[rstest]
+    #[case(r"foo\", false)]
+    #[case(r"foo\ ", true)]
+    pub fn test_valid_vs_invalid_patterns(#[case] pattern: &str, #[case] expect_valid: bool) {
+        let output = super::Glob::try_from(pattern);
+
+        assert_eq!(output.is_ok(), expect_valid);
+    }
+
+    #[rstest]
+    #[case(r"build/")]
+    #[case(r"tmp/")]
+    #[case(r"vendor/")]
+    #[case(r"!vendor/keep.me")]
+    #[case(r"*.tmp")]
+    #[case(r"*.log")]
+    #[case(r"**/globfoo.txt")]
+    #[case(r"globdir/**")]
+    #[case(r"a/**/globbar.txt")]
+    #[case(r"/anchored.txt")]
+    #[case(r"dironly/")]
+    #[case(r"literal/file\*.txt")]
+    #[case(r"literal/file\?.txt")]
+    #[case(r"literal/file\[abc\].txt")]
+    #[case(r"precedence.log")]
+    #[case(r"!important.log")]
+    #[case(r"pruned/")]
+    #[case(r"!pruned/deep/keep.txt")]
+    #[case(r"double_negation/important.tmp")]
+    #[case(r"foo")]
+    #[case(r"file?.txt")]
+    #[case(r"file[abc].log")]
+    #[case(r"file[0-9].txt")]
+    pub fn test_glob_regexes_match_snapshot(#[context] ctx: Context, #[case] pattern: &str) {
+        let output =
+            super::Glob::try_from(pattern).expect("Should never fail to build glob pattern");
+
+        assert_snapshot!(
+            format!(
+                "{}_{}",
+                ctx.name,
+                ctx.case.expect("to provide description for test case")
+            ),
+            output.regex.map(|r| r.to_string()).unwrap_or_default()
+        );
     }
 
     proptest! {

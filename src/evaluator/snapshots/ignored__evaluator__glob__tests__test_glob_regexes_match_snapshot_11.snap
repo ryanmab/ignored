@@ -1,0 +1,5 @@
+---
+source: src/evaluator/glob.rs
+expression: output.regex.map(|r| r.to_string()).unwrap_or_default()
+---
+^literal[\\/]file\*\.txt(?:$|[\\/])

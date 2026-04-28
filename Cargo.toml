@@ -30,6 +30,7 @@ rstest = "0.26.1"
 tempfile = "3.27.0"
 test-log = "0.2.20"
 temp-env = "0.3.6"
+insta = "1.47.2"
 
 [profile.release]
 lto = true
