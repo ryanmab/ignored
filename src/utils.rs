@@ -1,7 +1,7 @@
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,
-    io::{self, Seek, SeekFrom},
+    io::{self, Read, Seek, SeekFrom},
     path::Path,
 };
 
@@ -14,13 +14,24 @@ pub fn compute_checksum(path: impl AsRef<Path>) -> io::Result<(Vec<u8>, File)> {
     let mut file = File::open(path.as_ref())?;
 
     let mut hasher = Sha256::new();
-    io::copy(&mut file, &mut hasher)?;
 
-    let target_checksum = hasher.finalize();
+    // Incrementally read large files in 4KB chunks and update
+    // the hash until we've reached the end.
+    let mut buffer = [0; 4096]; // 4KB
+    loop {
+        let bytes_read = file.read(&mut buffer)?;
+
+        if bytes_read == 0 {
+            // We've reached the end of the file - the hash is now complete.
+            break;
+        }
+
+        hasher.update(&buffer[..bytes_read]);
+    }
 
     file.seek(SeekFrom::Start(0))?;
 
-    Ok((target_checksum.to_vec(), file))
+    Ok((hasher.finalize().to_vec(), file))
 }
 
 /// Checks if the given file is ignored by git in the specified repository path. This function is only used in
