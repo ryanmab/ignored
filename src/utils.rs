@@ -1,9 +1,7 @@
 use sha2::{Digest, Sha256};
-use std::{
-    fs::File,
-    io::{self, Read, Seek, SeekFrom},
-    path::Path,
-};
+use std::fs::File;
+use std::io::{self, Read, Seek, SeekFrom};
+use std::path::Path;
 
 #[cfg(test)]
 use proptest::prelude::*;

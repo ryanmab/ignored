@@ -1,14 +1,12 @@
-use std::{
-    collections::{HashMap, hash_map::Entry},
-    ffi::OsStr,
-    path::{Path, PathBuf},
-    sync::{Arc, Mutex},
-};
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
-use crate::{
-    constant,
-    evaluator::{self, File, git_config, git_root, types::Result, utils},
-};
+use crate::constant;
+use crate::evaluator::types::Result;
+use crate::evaluator::{self, File, git_config, git_root, utils};
 
 /// An evaluator for `.gitignore` files in a given directory and its parent directories.
 ///
