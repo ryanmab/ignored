@@ -1,7 +1,5 @@
-use std::{
-    path::{Path, PathBuf},
-    sync::RwLock,
-};
+use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
 use crate::constant;
 
@@ -105,7 +103,9 @@ impl RootHandler {
 #[cfg(test)]
 mod tests {
     use crate::evaluator::git_root::RootHandler;
-    use std::{path::PathBuf, str::FromStr, sync::RwLock};
+    use std::path::PathBuf;
+    use std::str::FromStr;
+    use std::sync::RwLock;
 
     use rstest::rstest;
 

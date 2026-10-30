@@ -1,13 +1,10 @@
-use std::{
-    fs,
-    io::Read,
-    path::{Path, PathBuf},
-};
+use std::fs;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
-use crate::{
-    constant,
-    evaluator::{self, git_config::ConfigFile},
-};
+use crate::constant;
+use crate::evaluator::git_config::ConfigFile;
+use crate::evaluator::{self};
 
 /// Parse a global git config file and extract the `excludesfile` config if present.
 ///

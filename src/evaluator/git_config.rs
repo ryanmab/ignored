@@ -1,9 +1,9 @@
-use std::{collections::HashMap, path::PathBuf, sync::RwLock};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::RwLock;
 
-use crate::{
-    constant,
-    evaluator::{self, utils},
-};
+use crate::constant;
+use crate::evaluator::{self, utils};
 
 #[derive(Debug)]
 pub struct ConfigFile {
@@ -129,9 +129,9 @@ impl ConfigHandler {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::{Path, PathBuf};
     use std::process::Stdio;
     use std::sync::RwLock;
-    use std::{path::Path, path::PathBuf};
     use temp_env::with_vars;
     use tempfile::TempDir;
 

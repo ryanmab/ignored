@@ -1,12 +1,8 @@
-use std::{
-    fmt::{self, Debug, Display},
-    path::{MAIN_SEPARATOR, Path},
-};
+use std::fmt::{self, Debug, Display};
+use std::path::{MAIN_SEPARATOR, Path};
 
-use crate::{
-    evaluator::{self, Result},
-    lexer::{self, Token, TokenStream},
-};
+use crate::evaluator::{self, Result};
+use crate::lexer::{self, Token, TokenStream};
 
 /// An individual glob pattern read from a `.gitignore` file.
 ///

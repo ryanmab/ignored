@@ -43,12 +43,14 @@ macro_rules! is_ignored {
 
 #[cfg(test)]
 mod tests {
-    use std::{io::Write, path::MAIN_SEPARATOR_STR};
+    use std::io::Write;
+    use std::path::MAIN_SEPARATOR_STR;
     use temp_env::with_vars;
     use tempfile::TempDir;
 
     use crate::{constant, utils};
-    use std::{path::PathBuf, process::Command};
+    use std::path::PathBuf;
+    use std::process::Command;
 
     #[test_log::test(rstest::rstest)]
     #[case(vec!["root.txt"])]
